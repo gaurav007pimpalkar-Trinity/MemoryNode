@@ -7,6 +7,11 @@ if [[ -f .env.e2e ]]; then
   source .env.e2e
 fi
 
+# Allow MEMORYNODE_API_KEY as alias for E2E_API_KEY
+if [[ -z "${E2E_API_KEY:-}" && -n "${MEMORYNODE_API_KEY:-}" ]]; then
+  export E2E_API_KEY="$MEMORYNODE_API_KEY"
+fi
+
 REQUIRED_VARS=(E2E_API_KEY SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY API_KEY_SALT)
 missing=()
 for var in "${REQUIRED_VARS[@]}"; do
