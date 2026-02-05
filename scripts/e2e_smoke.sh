@@ -12,20 +12,39 @@ if [[ -z "${E2E_API_KEY:-}" && -n "${MEMORYNODE_API_KEY:-}" ]]; then
   export E2E_API_KEY="$MEMORYNODE_API_KEY"
 fi
 
-REQUIRED_VARS=(E2E_API_KEY SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY API_KEY_SALT)
-missing=()
-for var in "${REQUIRED_VARS[@]}"; do
-  if [[ -z "${!var:-}" ]]; then
-    missing+=("$var")
-  fi
-done
-if [[ ${#missing[@]} -gt 0 ]]; then
-  echo "Missing required env vars: ${missing[*]}" >&2
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
+LOG=.tmp/e2e_smoke.log
+mkdir -p .tmp
+
+# Decide mode
+BASE_URL="${BASE_URL:-https://api-staging.memorynode.ai}"
+USE_LOCAL_DEV=0
+if [[ "$BASE_URL" == http://127.0.0.1:* || "$BASE_URL" == http://localhost:* ]]; then
+  USE_LOCAL_DEV=1
+fi
+
+if [[ -z "${E2E_API_KEY:-}" ]]; then
+  echo "Missing required env vars: E2E_API_KEY (or MEMORYNODE_API_KEY)" >&2
   exit 1
 fi
 
-# Choose a random free port
-PORT="$(python - <<'PY'
+if [[ "$USE_LOCAL_DEV" -eq 1 ]]; then
+  REQUIRED_VARS=(E2E_API_KEY SUPABASE_URL SUPABASE_SERVICE_ROLE_KEY API_KEY_SALT)
+  missing=()
+  for var in "${REQUIRED_VARS[@]}"; do
+    if [[ -z "${!var:-}" ]]; then
+      missing+=("$var")
+    fi
+  done
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    echo "Missing required env vars for local dev smoke: ${missing[*]}" >&2
+    exit 1
+  }
+
+  # Choose a random free port
+  PORT="$(python - <<'PY'
 import socket
 s = socket.socket()
 s.bind(("",0))
@@ -33,57 +52,53 @@ print(s.getsockname()[1])
 s.close()
 PY
 )"
+  export PORT
+  export EMBEDDINGS_MODE="${EMBEDDINGS_MODE:-stub}"
 
-export PORT
-export EMBEDDINGS_MODE="${EMBEDDINGS_MODE:-stub}"
-
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$ROOT_DIR"
-
-LOG=.tmp/e2e_smoke.log
-mkdir -p .tmp
-
-WRANGLER_TOML="$ROOT_DIR/apps/api/wrangler.toml"
-if [[ ! -f "$WRANGLER_TOML" ]] || ! grep -q 'durable_objects' "$WRANGLER_TOML"; then
-  echo "ERROR: wrangler.toml is missing durable_objects section (expected RATE_LIMIT_DO)" >&2
-  exit 1
-fi
-if ! grep -q 'binding *= *\"RATE_LIMIT_DO\"' "$WRANGLER_TOML"; then
-  echo "ERROR: wrangler.toml is missing durable_objects binding RATE_LIMIT_DO" >&2
-  sed -n '/durable_objects/,+12p' "$WRANGLER_TOML"
-  exit 1
-fi
-
-cleanup() {
-  if [[ -n "${WRANGLER_PID:-}" ]] && ps -p "$WRANGLER_PID" >/dev/null 2>&1; then
-    kill "$WRANGLER_PID" >/dev/null 2>&1 || true
+  WRANGLER_TOML="$ROOT_DIR/apps/api/wrangler.toml"
+  if [[ ! -f "$WRANGLER_TOML" ]] || ! grep -q 'durable_objects' "$WRANGLER_TOML"; then
+    echo "ERROR: wrangler.toml is missing durable_objects section (expected RATE_LIMIT_DO)" >&2
+    exit 1
   fi
-}
-trap cleanup EXIT
+  if ! grep -q 'binding *= *\"RATE_LIMIT_DO\"' "$WRANGLER_TOML"; then
+    echo "ERROR: wrangler.toml is missing durable_objects binding RATE_LIMIT_DO" >&2
+    sed -n '/durable_objects/,+12p' "$WRANGLER_TOML"
+    exit 1
+  fi
 
-echo "Starting wrangler dev on port $PORT..."
-pnpm --filter @memorynode/api wrangler dev --port "$PORT" --log-level error >"$LOG" 2>&1 &
-WRANGLER_PID=$!
-
-wait_health() {
-  printf "Waiting for /healthz"
-  for _ in {1..60}; do
-    if curl -sf "http://127.0.0.1:$PORT/healthz" >/dev/null; then
-      echo " ok"
-      return 0
+  cleanup() {
+    if [[ -n "${WRANGLER_PID:-}" ]] && ps -p "$WRANGLER_PID" >/dev/null 2>&1; then
+      kill "$WRANGLER_PID" >/dev/null 2>&1 || true
     fi
-    printf "."
-    sleep 1
-  done
-  echo " failed"
-  echo "Health check failed. Recent logs:"
-  tail -n 200 "$LOG" || true
-  exit 1
-}
+  }
+  trap cleanup EXIT
 
-BASE="http://127.0.0.1:${PORT}"
-echo "Base URL: $BASE"
-wait_health
+  echo "Starting wrangler dev on port $PORT..."
+  pnpm --filter @memorynode/api wrangler dev --port "$PORT" --log-level error >"$LOG" 2>&1 &
+  WRANGLER_PID=$!
+
+  wait_health() {
+    printf "Waiting for /healthz"
+    for _ in {1..60}; do
+      if curl -sf "http://127.0.0.1:$PORT/healthz" >/dev/null; then
+        echo " ok"
+        return 0
+      fi
+      printf "."
+      sleep 1
+    done
+    echo " failed"
+    echo "Health check failed. Recent logs:"
+    tail -n 200 "$LOG" || true
+    exit 1
+  }
+
+  BASE_URL="http://127.0.0.1:${PORT}"
+  echo "Base URL (local dev): $BASE_URL"
+  wait_health
+else
+  echo "Base URL (remote): $BASE_URL"
+fi
 
 fail() {
   echo "E2E smoke failed: $1"
