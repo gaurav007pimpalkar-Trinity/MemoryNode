@@ -11,6 +11,7 @@ Use this runbook to deploy the Cloudflare Worker to staging, including DB migrat
 - `MEMORYNODE_API_KEY` – staging API key for smoke
 - Optional billing smoke: `STRIPE_WEBHOOK_SECRET` (and Stripe staging keys in the platform)
 - Optional `BUILD_VERSION` is auto-set by the deploy script (ISO timestamp). You can override by setting it in the environment before running.
+ - GitHub secrets (recommended names) for CI/manual smokes: `MEMORYNODE_API_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `API_KEY_SALT`.
 
 ## Command
 ```
