@@ -86,3 +86,44 @@ jobs:
           EMBEDDINGS_MODE: stub
           PORT: 8787
         run: pnpm smoke:ci
+
+  release-safety-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Prepare pnpm
+        run: corepack prepare pnpm@latest-10 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Check example envs are empty
+        run: node scripts/check_examples_no_values.mjs
+
+      - name: Light secret scan
+        run: node scripts/secret_scan_light.mjs
+
+      - name: Prod gate dry-run (expect friendly missing-vars if not set)
+        env:
+          DRY_RUN: "1"
+          CHECK_ENV: "staging"
+        run: pnpm prod:gate || true

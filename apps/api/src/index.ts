@@ -789,7 +789,8 @@ function createStubSupabase(env: Env) {
     },
     rpc(name: string, params: Record<string, unknown>) {
       switch (name) {
-        case "bump_usage": {
+        case "bump_usage":
+        case "bump_usage_rpc": {
           const existing = db.usage_daily.find(
             (r) => r.workspace_id === params.p_workspace_id && r.day === params.p_day,
           );
@@ -2271,7 +2272,7 @@ async function bumpUsage(
   day: string,
   deltas: { writesDelta: number; readsDelta: number; embedsDelta: number },
 ): Promise<UsageRow> {
-  const { data, error } = await supabase.rpc("bump_usage", {
+  const { data, error } = await supabase.rpc("bump_usage_rpc", {
     p_workspace_id: workspaceId,
     p_day: day,
     p_writes: deltas.writesDelta,

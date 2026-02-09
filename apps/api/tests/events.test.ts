@@ -140,7 +140,8 @@ function makeSupabase(options?: {
       return { rpc: () => ({ data: [], error: null }) };
     },
     rpc(name: string) {
-      if (name === "bump_usage") return { data: { writes: usage.writes, reads: usage.reads, embeds: usage.embeds }, error: null };
+      if (name === "bump_usage_rpc" || name === "bump_usage")
+        return { data: { writes: usage.writes, reads: usage.reads, embeds: usage.embeds }, error: null };
       return { data: [], error: null };
     },
   } as unknown as SupabaseMock;

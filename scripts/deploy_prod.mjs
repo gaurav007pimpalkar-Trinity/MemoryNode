@@ -25,17 +25,46 @@ function mask(value) {
   return `${value.slice(0, 4)}...${value.slice(-4)}`;
 }
 
-function requireEnv(name) {
-  const v = process.env[name];
-  if (!v || `${v}`.trim() === "") {
-    fail(`Missing required env var: ${name}`);
+function gatherEnv(names) {
+  const found = {};
+  for (const n of names) {
+    const v = process.env[n];
+    if (v && `${v}`.trim() !== "") {
+      found[n] = v;
+    }
   }
-  return v;
+  return found;
+}
+
+function resolveEnvOrAlias(primary, aliases = []) {
+  const candidates = gatherEnv([primary, ...aliases]);
+  const first = Object.entries(candidates)[0];
+  return first ? first[1] : "";
+}
+
+function formatMissing(missing, target) {
+  const hintStage = target === "production" ? "prod" : target;
+  const bash = missing
+    .map((k) => `${k}=<value>`)
+    .join(" ");
+  const ps = missing.map((k) => `$env:${k}='<value>'`).join("; ");
+  return [
+    `Missing required env vars: ${missing.join(", ")}`,
+    "Examples:",
+    `  bash: ${bash} pnpm deploy:${hintStage}`,
+    `  pwsh: ${ps}; pnpm deploy:${hintStage}`,
+  ].join("\n");
 }
 
 function run(cmd, extraEnv = {}) {
   console.log(`\n$ ${cmd}`);
   execSync(cmd, { stdio: "inherit", env: { ...process.env, ...extraEnv } });
+}
+
+function runWrangler(args, extraEnv = {}) {
+  const cmd = `npx wrangler ${args}`;
+  console.log(`\n$ (apps/api) ${cmd}`);
+  execSync(cmd, { stdio: "inherit", cwd: "apps/api", env: { ...process.env, ...extraEnv } });
 }
 
 async function getHealth(baseUrl) {
@@ -60,7 +89,7 @@ async function wait(ms) {
 
 function ensureWranglerAuth() {
   try {
-    execSync("pnpm -C apps/api wrangler whoami", { stdio: "inherit" });
+    runWrangler("whoami");
   } catch {
     fail(
       "Wrangler auth missing. Run `pnpm -C apps/api wrangler login` or set CLOUDFLARE_API_TOKEN before deploy.",
@@ -102,19 +131,28 @@ async function smoke(baseUrl, apiKey) {
 }
 
 async function main() {
-  const stage = (process.env.STAGE ?? process.env.DEPLOY_ENV ?? "").toLowerCase();
-  if (stage !== "production") {
-    fail("Set STAGE=production (or DEPLOY_ENV=production) to run this deploy.");
-  }
+  const stageRaw = (process.env.DEPLOY_ENV ?? process.env.STAGE ?? "production").toLowerCase();
+  const stage = stageRaw || "production";
 
+  const missing = [];
+  if (stage !== "production") missing.push("DEPLOY_ENV (or STAGE) must be production");
   if (process.env.DEPLOY_CONFIRM !== "memorynode-prod") {
-    fail('Refusing to deploy: set DEPLOY_CONFIRM="memorynode-prod" to continue.');
+    missing.push('DEPLOY_CONFIRM="memorynode-prod"');
   }
 
-  const dbUrl = process.env.SUPABASE_DB_URL || process.env.DATABASE_URL;
-  if (!dbUrl) fail("Missing SUPABASE_DB_URL (or DATABASE_URL) for migrations.");
-  const baseUrl = requireEnv("BASE_URL");
-  const apiKey = requireEnv("MEMORYNODE_API_KEY");
+  const dbUrl = resolveEnvOrAlias("DATABASE_URL", ["SUPABASE_DB_URL", "SUPABASE_DATABASE_URL"]);
+  if (!dbUrl) missing.push("DATABASE_URL");
+
+  const baseUrl = resolveEnvOrAlias("BASE_URL");
+  if (!baseUrl) missing.push("BASE_URL");
+
+  const apiKey = resolveEnvOrAlias("MEMORYNODE_API_KEY");
+  if (!apiKey) missing.push("MEMORYNODE_API_KEY");
+
+  if (missing.length > 0) {
+    fail(formatMissing(missing, "production"));
+  }
+
   const buildVersion = new Date().toISOString();
   const expectedStage = "production";
 
@@ -134,11 +172,19 @@ async function main() {
 
   ensureWranglerAuth();
 
+  const isDryRun = `${process.env.DRY_RUN ?? ""}` === "1";
+  if (isDryRun) {
+    console.log("\nDRY_RUN=1 set: running validation + build only (no deploy)");
+    runWrangler("deploy --env production --dry-run", { BUILD_VERSION: buildVersion });
+    console.log("\n✅ Dry-run complete (build + wrangler parsed)");
+    return;
+  }
+
   // Strict gate including DB migrate/verify
   run("pnpm release:gate:full");
 
   // Deploy to production environment
-  run("pnpm -C apps/api wrangler deploy --env production", { BUILD_VERSION: buildVersion });
+  runWrangler("deploy --env production", { BUILD_VERSION: buildVersion });
 
   // Verify new version is live
   console.log("\n[verify] polling /healthz for new version...");

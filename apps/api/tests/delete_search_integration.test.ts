@@ -54,7 +54,7 @@ function makeSupabase(store: ReturnType<typeof makeStore>) {
         );
         return Promise.resolve({ data: rows, error: null });
       }
-      if (name === "bump_usage") {
+      if (name === "bump_usage_rpc" || name === "bump_usage") {
         return Promise.resolve({
           data: {
             workspace_id: args.p_workspace_id,

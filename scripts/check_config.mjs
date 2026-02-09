@@ -12,6 +12,10 @@ const env = process.env;
 function stageFromEnv() {
   const forced = (env.CHECK_ENV || "").toLowerCase();
   if (forced === "prod" || forced === "production") return "prod";
+  if (forced === "staging") return "staging";
+  const dep = (env.DEPLOY_ENV || "").toLowerCase();
+  if (dep === "staging") return "staging";
+  if (dep === "prod" || dep === "production") return "prod";
   const raw = (env.ENVIRONMENT || env.NODE_ENV || "dev").toLowerCase();
   if (raw === "prod" || raw === "production") return "prod";
   if (raw === "staging") return "staging";
@@ -23,6 +27,12 @@ const stage = stageFromEnv();
 const requiredForProd = [
   "SUPABASE_URL",
   "SUPABASE_SERVICE_ROLE_KEY",
+  "API_KEY_SALT",
+  "MASTER_ADMIN_TOKEN",
+];
+
+const requiredForStaging = [
+  "SUPABASE_URL",
   "API_KEY_SALT",
   "MASTER_ADMIN_TOKEN",
 ];
@@ -70,6 +80,19 @@ if (stage === "prod") {
     if (isMissing(key)) errors.push(`${key} is required for billing in production.`);
     else if (isPlaceholder(key)) errors.push(`${key} must not be a placeholder value.`);
   }
+} else if (stage === "staging") {
+  for (const key of requiredForStaging) {
+    if (isMissing(key)) errors.push(`${key} is required in staging.`);
+    else if (isPlaceholder(key)) errors.push(`${key} must not be a placeholder value.`);
+  }
+  const embeddingsMode = (env.EMBEDDINGS_MODE || "").toLowerCase();
+  if (!embeddingsMode) {
+    errors.push("EMBEDDINGS_MODE is required in staging.");
+  }
+  if (embeddingsMode === "openai" && isMissing("OPENAI_API_KEY")) {
+    errors.push("OPENAI_API_KEY is required in staging when EMBEDDINGS_MODE=openai.");
+  }
+  console.log("Running in staging stage. Set CHECK_ENV=production for prod checks.");
 } else {
   // Non-prod: keep lightweight, but hint how to run prod checks
   console.log(

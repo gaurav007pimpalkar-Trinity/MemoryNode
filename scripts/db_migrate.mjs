@@ -6,10 +6,40 @@ import { Client } from "pg";
 
 const dbUrl = process.env.SUPABASE_DB_URL || process.env.DATABASE_URL;
 
-if (!dbUrl) {
-  console.error("Missing SUPABASE_DB_URL (or DATABASE_URL) environment variable.");
+function fail(msg) {
+  console.error(msg);
   process.exit(1);
 }
+
+function validateDbUrl(raw) {
+  if (!raw) {
+    fail("Missing SUPABASE_DB_URL (or DATABASE_URL) environment variable.");
+  }
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    fail(
+      "Invalid DATABASE_URL format. Expected like: postgres://USER:PASSWORD@HOST:5432/DB?sslmode=require",
+    );
+  }
+  const host = (parsed.hostname || "").toLowerCase();
+  const badHosts = ["host", "example.com", "localhost", "127.0.0.1"];
+  const rawLower = raw.toLowerCase();
+  if (
+    badHosts.includes(host) ||
+    rawLower.includes("your_") ||
+    rawLower.includes("replace_me") ||
+    rawLower.includes("changeme")
+  ) {
+    fail(
+      `DATABASE_URL appears to be a placeholder (${parsed.hostname}). Set a real Postgres URL, e.g. postgres://USER:PASSWORD@HOST:5432/DB?sslmode=require (Supabase often requires sslmode=require or pooler host). Check .env.staging.smoke/.env.gate.`,
+    );
+  }
+  return parsed.toString();
+}
+
+const validatedDbUrl = validateDbUrl(dbUrl);
 
 const migrationsDir = path.resolve("infra/sql");
 const migrationTable = "memorynode_migrations";
@@ -66,8 +96,8 @@ async function applyMigration(client, filename) {
 
 async function main() {
   const client = new Client({
-    connectionString: dbUrl,
-    ssl: dbUrl.includes("supabase.co") ? { rejectUnauthorized: false } : undefined,
+    connectionString: validatedDbUrl,
+    ssl: validatedDbUrl.includes("supabase.co") ? { rejectUnauthorized: false } : undefined,
   });
   await client.connect();
   try {

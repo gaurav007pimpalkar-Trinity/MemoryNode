@@ -24,7 +24,7 @@ function makeSupabase() {
         }
         return Promise.resolve({ data: [], error: null });
       }
-      if (name === "bump_usage") {
+      if (name === "bump_usage_rpc" || name === "bump_usage") {
         return Promise.resolve({
           data: { workspace_id: args.p_workspace_id, day: args.p_day, writes: 0, reads: 0, embeds: 0 },
           error: null,

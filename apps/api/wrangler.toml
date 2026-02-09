@@ -25,22 +25,38 @@ new_sqlite_classes = ["RateLimitDO"]
 
 [env.staging]
 name = "memorynode-api-staging"
-vars = {
-  SUPABASE_URL = "https://nxwvdpjbplresxkptdft.supabase.co",
-  EMBEDDINGS_MODE = "openai",
-  SUPABASE_MODE = "",
-  ENVIRONMENT = "staging",
-  BUILD_VERSION = "",
-  RATE_LIMIT_MODE = "on",
-}
+[env.staging.durable_objects]
+bindings = [
+  { name = "RATE_LIMIT_DO", class_name = "RateLimitDO" }
+]
+
+[[env.staging.migrations]]
+tag = "v1"
+new_sqlite_classes = ["RateLimitDO"]
+
+[env.staging.vars]
+SUPABASE_URL = "https://nxwvdpjbplresxkptdft.supabase.co"
+EMBEDDINGS_MODE = "openai"
+SUPABASE_MODE = ""
+ENVIRONMENT = "staging"
+BUILD_VERSION = ""
+RATE_LIMIT_MODE = "on"
 
 [env.production]
 name = "memorynode-api"
-vars = {
-  SUPABASE_URL = "https://nxwvdpjbplresxkptdft.supabase.co",
-  EMBEDDINGS_MODE = "openai",
-  SUPABASE_MODE = "",
-  ENVIRONMENT = "production",
-  BUILD_VERSION = "",
-  RATE_LIMIT_MODE = "on",
-}
+[env.production.durable_objects]
+bindings = [
+  { name = "RATE_LIMIT_DO", class_name = "RateLimitDO" }
+]
+
+[[env.production.migrations]]
+tag = "v1"
+new_sqlite_classes = ["RateLimitDO"]
+
+[env.production.vars]
+SUPABASE_URL = "https://nxwvdpjbplresxkptdft.supabase.co"
+EMBEDDINGS_MODE = "openai"
+SUPABASE_MODE = ""
+ENVIRONMENT = "production"
+BUILD_VERSION = ""
+RATE_LIMIT_MODE = "on"

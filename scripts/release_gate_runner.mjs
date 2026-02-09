@@ -7,7 +7,7 @@
 
 import { execSync } from "node:child_process";
 
-const env = { ...process.env, CHECK_ENV: "production" };
+const env = { ...process.env, CHECK_ENV: process.env.CHECK_ENV ?? "production" };
 
 function run(cmd) {
   console.log(`\n$ ${cmd}`);

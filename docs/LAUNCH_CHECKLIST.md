@@ -23,6 +23,11 @@ Use this every time we go live (or reconfigure) to avoid surprises. Keep it shor
   - Do not set `RATE_LIMIT_MODE=off` in production; allowed only for dev/staging.
 - Tooling: Corepack enabled and pnpm activated (`corepack enable && corepack prepare pnpm@latest-10 --activate`).
    - If `corepack enable` fails on Windows (EPERM), skip it and run `corepack prepare pnpm@latest-10 --activate` then invoke `pnpm` (or `pnpm.cjs` if that’s what is present) or add the Corepack pnpm folder to `PATH`.
+- Gate: copy `.env.gate.example` to `.env.gate`, fill required vars, then run `pnpm prod:gate` (runs lint/typecheck/tests + staging/prod dry-run deploys).
+- Staging deploy + smoke: set envs (`BASE_URL`, `DATABASE_URL`, `MEMORYNODE_API_KEY`, `DEPLOY_ENV=staging`, `CLOUDFLARE_API_TOKEN` or wrangler login) then run `pnpm deploy:staging` for a real deploy; afterwards run `pnpm smoke:staging` (uses `.env.gate` or `.env.staging.smoke` for BASE_URL/API key) against the deployed worker.
+- One-command staging release check: `pnpm staging:release-check` (loads `.env.staging.smoke` then `.env.gate`, performs real staging deploy, then runs live staging smoke).
+- Production readiness: copy `.env.prod.smoke.example` to `.env.prod.smoke`, fill secrets/URLs, run `pnpm prod:gate` (dry-run), then `pnpm prod:release-check` for real prod deploy + live smoke. Safety latch: set `DEPLOY_CONFIRM=memorynode-prod`.
+- Ops runbook: see `docs/OPERATIONS.md` for secrets inventory, rollback steps, and incident checks (DO, Supabase, Stripe).
 - Domains: API base URL reachable (e.g., `https://api.memorynode.ai`), DNS propagated.
 - CORS: `ALLOWED_ORIGINS` includes dashboard origin; default deny otherwise.
 - Dashboard env (`apps/dashboard/.env.local`): `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_API_BASE_URL`.
