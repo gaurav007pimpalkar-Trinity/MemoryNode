@@ -1,10 +1,15 @@
--- Quick RLS verification queries
-
--- Check RLS flag
-select relname, relrowsecurity
-from pg_class
-where relname in ('workspaces','api_keys','memories','memory_chunks','usage_daily','api_audit_log')
-order by relname;
+-- Returns rows only when RLS is missing or not enforced on required tables.
+select c.relname, c.relrowsecurity, c.relforcerowsecurity
+from pg_class c
+join pg_namespace n on n.oid = c.relnamespace
+where n.nspname = 'public'
+  and c.relkind = 'r'
+  and c.relname in ('api_audit_log','api_keys','memories','memory_chunks','usage_daily','workspaces')
+  and (
+    c.relrowsecurity is not true
+    or c.relforcerowsecurity is not true
+  )
+order by 1;
 
 -- Simulate tenant JWT (replace UUIDs as needed)
 -- set local role authenticated;

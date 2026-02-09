@@ -28,9 +28,7 @@ async function main() {
     const res = await client.query(sql);
     const rows = res?.rows ?? [];
 
-    const hasViolations =
-      rows.length > 0 ||
-      rows.some((row) => JSON.stringify(row).match(/fail|error/i));
+    const hasViolations = rows.length > 0;
 
     if (hasViolations) {
       console.error("RLS verification failed; violations returned:");
@@ -38,7 +36,7 @@ async function main() {
       process.exit(1);
     }
 
-    console.log("RLS verification passed (no violations returned).");
+    console.log("RLS verification passed.");
   } finally {
     await client.end();
   }
