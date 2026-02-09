@@ -19,6 +19,8 @@
  */
 
 import { execSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 
 function fail(message) {
   console.error(message);
@@ -83,9 +85,9 @@ async function getHealth(baseUrl) {
     } catch {
       // ignore parse errors
     }
-    return { ok: res.ok, status: res.status, json };
+    return { ok: res.ok, status: res.status, json, text };
   } catch (err) {
-    return { ok: false, status: 0, json: null, error: err };
+    return { ok: false, status: 0, json: null, text: "", error: err };
   }
 }
 
@@ -101,6 +103,26 @@ function ensureWranglerAuth() {
       "Wrangler auth missing. Run `pnpm -C apps/api wrangler login` (or set CLOUDFLARE_API_TOKEN) before deploy.",
     );
   }
+}
+
+function injectBuildVersionIntoWrangler(envName, buildVersion) {
+  const wranglerPath = path.join("apps", "api", "wrangler.toml");
+  const tmpPath = path.join("apps", "api", `.wrangler.${envName}.tmp.toml`);
+  const raw = fs.readFileSync(wranglerPath, "utf8");
+  const blockRe = new RegExp(`\\[env\\.${envName}\\.vars\\]([\\s\\S]*?)(?=\\n\\[env\\.|$)`);
+  const match = raw.match(blockRe);
+  if (!match) {
+    throw new Error(`wrangler.toml missing [env.${envName}.vars] block`);
+  }
+  const block = match[0];
+  const hasLine = /^\s*BUILD_VERSION\s*=.*/m.test(block);
+  const header = `[env.${envName}.vars]\n`;
+  const updated = hasLine
+    ? block.replace(/^\s*BUILD_VERSION\s*=.*$/m, `BUILD_VERSION = "${buildVersion}"`)
+    : block.replace(header, `${header}BUILD_VERSION = "${buildVersion}"\n`);
+  const finalToml = raw.replace(blockRe, updated);
+  fs.writeFileSync(tmpPath, finalToml);
+  return tmpPath;
 }
 
 async function smoke(baseUrl, apiKey) {
@@ -145,6 +167,8 @@ async function main() {
 
   const buildVersion = new Date().toISOString();
   const expectedStage = "staging";
+  process.env.BUILD_VERSION = buildVersion;
+  const wranglerConfig = injectBuildVersionIntoWrangler("staging", buildVersion);
 
   console.log("Staging deploy starting…");
   console.log(` STAGE=${stage}`);
@@ -153,7 +177,7 @@ async function main() {
   console.log(` BUILD_VERSION=${buildVersion}`);
 
   const pre = await getHealth(baseUrl);
-  const oldVersion = pre?.json?.version;
+  const oldVersion = pre?.json?.build_version ?? pre?.json?.version;
   if (pre.ok) {
     console.log(` prehealth: status=${pre.status}, oldVersion=${oldVersion ?? "<none>"}`);
   } else {
@@ -165,7 +189,9 @@ async function main() {
   const isDryRun = `${process.env.DRY_RUN ?? ""}` === "1";
   if (isDryRun) {
     console.log("\nDRY_RUN=1 set: running validation + build only (no deploy)");
-    runWrangler("deploy --env staging --dry-run", { BUILD_VERSION: buildVersion });
+    runWrangler(`deploy --env staging --config ${path.basename(wranglerConfig)} --dry-run`, {
+      BUILD_VERSION: buildVersion,
+    });
     console.log("\n✅ Dry-run complete (build + wrangler parsed)");
     return;
   }
@@ -174,17 +200,21 @@ async function main() {
   run("pnpm release:gate:full", { CHECK_ENV: "staging" });
 
   // Deploy to staging environment
-  runWrangler("deploy --env staging", { BUILD_VERSION: buildVersion });
+  runWrangler(`deploy --env staging --config ${path.basename(wranglerConfig)}`, {
+    BUILD_VERSION: buildVersion,
+  });
 
   // Verify new version is live
   console.log("\n[verify] polling /healthz for new version...");
   let seenVersion = null;
   let lastStatus = 0;
+  let lastBody = "<none>";
   const attempts = 10;
   for (let i = 0; i < attempts; i++) {
     const res = await getHealth(baseUrl);
     lastStatus = res.status;
-    seenVersion = res?.json?.version;
+    lastBody = res?.text ?? "<none>";
+    seenVersion = res?.json?.build_version ?? res?.json?.version;
     const stageSeen = res.json?.stage?.toLowerCase?.();
     const stageMatch = !stageSeen || stageSeen === expectedStage;
     if (res.ok && res.json?.status === "ok" && seenVersion === buildVersion && stageMatch) {
@@ -202,7 +232,7 @@ async function main() {
   }
   if (seenVersion !== buildVersion) {
     fail(
-      `Deployed version not observed. oldVersion=${oldVersion ?? "<none>"} lastVersion=${seenVersion ?? "<none>"} lastStatus=${lastStatus}`,
+      `Deployed version not observed. oldVersion=${oldVersion ?? "<none>"} lastVersion=${seenVersion ?? "<none>"} lastStatus=${lastStatus} lastBody=${lastBody}`,
     );
   }
 

@@ -442,9 +442,15 @@ export default {
       await assertBodySize(request, env, bodyLimit);
 
       if (request.method === "GET" && url.pathname === "/healthz") {
-        const version = (env.BUILD_VERSION ?? "").trim() || "dev";
+        const buildVersion = (env.BUILD_VERSION ?? "").trim();
+        const version = buildVersion || "dev";
         const stage = (env.ENVIRONMENT ?? env.NODE_ENV ?? "").trim();
-        response = jsonResponse({ status: "ok", version, ...(stage ? { stage } : {}) });
+        response = jsonResponse({
+          status: "ok",
+          version,
+          build_version: version,
+          ...(stage ? { stage } : {}),
+        });
         return response;
       }
 

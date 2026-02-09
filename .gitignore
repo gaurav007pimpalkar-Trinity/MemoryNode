@@ -24,6 +24,8 @@ coverage/
 .env.*
 !.env.example
 !.env.e2e.example
+.wrangler.staging.tmp.toml
+.wrangler.production.tmp.toml
 .env.gate
 .dev.vars
 .dev.vars.*
