@@ -46,9 +46,25 @@ const migrationTable = "memorynode_migrations";
 
 function listMigrations() {
   const files = fs.readdirSync(migrationsDir);
-  return files
+  const ordered = files
     .filter((f) => /^\d+_.*\.sql$/.test(f) && f !== "verify_rls.sql")
-    .sort((a, b) => a.localeCompare(b, "en", { numeric: true }));
+    .sort((a, b) => {
+      const [, aNum] = a.match(/^(\d+)_/) || [];
+      const [, bNum] = b.match(/^(\d+)_/) || [];
+      const aInt = parseInt(aNum || "0", 10);
+      const bInt = parseInt(bNum || "0", 10);
+      if (aInt !== bInt) return aInt - bInt;
+      const aIsRpc = /_rpc\.sql$/i.test(a);
+      const bIsRpc = /_rpc\.sql$/i.test(b);
+      if (aIsRpc !== bIsRpc) return aIsRpc ? 1 : -1; // non-RPC before RPC within same prefix
+      return a.localeCompare(b, "en", { numeric: true });
+    });
+
+  if (process.env.DEBUG_MIGRATIONS === "1") {
+    console.log("Migration order:\n" + ordered.join("\n"));
+  }
+
+  return ordered;
 }
 
 function sha256(content) {
