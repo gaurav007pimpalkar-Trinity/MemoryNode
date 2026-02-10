@@ -11,7 +11,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
           persist-credentials: false
 
@@ -29,6 +29,39 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Secret scan (tracked + commit diff)
+        env:
+          SCAN_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          SCAN_HEAD: ${{ github.sha }}
+        run: pnpm secrets:check -- --ci --base "$SCAN_BASE" --head "$SCAN_HEAD"
+
+      - name: Validate script syntax
+        run: |
+          bash -n scripts/verify_e2e.sh
+          node --check scripts/verify_staging.mjs
+          node --check scripts/beta_verify.mjs
+          node --check examples/node-quickstart/index.mjs
+          node --check examples/nextjs-middleware/demo.mjs
+          node --check examples/langchain-wrapper/demo.mjs
+          pwsh -NoProfile -Command '
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile("scripts/verify_e2e.ps1", [ref]$tokens, [ref]$errors)
+            if ($errors -and $errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error $_.Message }
+              exit 1
+            }
+          '
+
+      - name: E2E log redaction guard
+        run: |
+          output="$(E2E_MASK_SELF_TEST=1 pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/verify_e2e.ps1 2>&1)"
+          printf '%s\n' "$output"
+          if printf '%s\n' "$output" | grep -E 'mn_live_[0-9a-fA-F]{21,}' >/dev/null; then
+            echo "Token leak detected in verify_e2e.ps1 output"
+            exit 1
+          fi
+
       - name: Lint
         run: pnpm lint
 
@@ -37,6 +70,50 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+  db-migration-drift:
+    needs: build
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Prepare pnpm
+        run: corepack prepare pnpm@latest-10 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Migration drift test (fresh + partial DB)
+        env:
+          MIGRATION_TEST_ADMIN_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+        run: pnpm db:drift:test
 
   smoke:
     needs: build
@@ -131,11 +208,19 @@ jobs:
       - name: Check example envs are empty
         run: node scripts/check_examples_no_values.mjs
 
-      - name: Light secret scan
-        run: node scripts/secret_scan_light.mjs
+      - name: Secret scan (tracked files)
+        run: pnpm secrets:check -- --ci
 
-      - name: Prod gate dry-run (expect friendly missing-vars if not set)
+      - name: Prod gate self-test (must fail on forced command error)
+        run: pnpm prod:gate:self-test
+
+      - name: Prod gate dry-run
+        if: ${{ hashFiles('.env.gate') != '' }}
         env:
           DRY_RUN: "1"
           CHECK_ENV: "staging"
-        run: pnpm prod:gate || true
+        run: pnpm prod:gate
+
+      - name: Prod gate dry-run skipped
+        if: ${{ hashFiles('.env.gate') == '' }}
+        run: echo "Skipping prod gate dry-run: .env.gate not found in CI."

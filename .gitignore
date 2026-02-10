@@ -22,8 +22,12 @@ coverage/
 ##########
 .env
 .env.*
+*.env
+*.env.*
 !.env.example
 !.env.e2e.example
+!*.env.example
+!*.env.*.example
 .wrangler.staging.tmp.toml
 .wrangler.production.tmp.toml
 .env.gate
@@ -59,6 +63,16 @@ Thumbs.db
 # Tool state / temp
 ##########
 apps/api/.wrangler/state/
+apps/api/.wrangler*
+apps/api/.wrangler-dryrun/
+apps/api/_wrangler_out/
+.wrangler*
+*.BACKUP.*
+_local_backup/
+key.json
+ws.json
+gate.env
+staging_verify_output.txt
 _founder_notes/
 .tmp/
 .venv/

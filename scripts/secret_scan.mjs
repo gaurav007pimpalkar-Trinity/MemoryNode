@@ -1,111 +1,283 @@
 #!/usr/bin/env node
-/**
- * Lightweight secret scan (local only, no uploads).
- * - Scans text files for obvious secret patterns.
- * - Skips heavy/irrelevant dirs: node_modules, dist, coverage, .wrangler, .turbo, .vite, .cache, .git, .tmp.
- * - Prints rule name + file path; never prints secret values.
- */
-
 import fs from "node:fs";
-import path from "node:path";
+import { execFileSync } from "node:child_process";
 
-const SKIP_DIRS = new Set([
-  "node_modules",
-  ".git",
-  "dist",
-  "coverage",
-  ".wrangler",
-  ".turbo",
-  ".vite",
-  ".cache",
-  ".tmp",
-  ".pnpm-store",
-]);
+const MAX_FILE_BYTES = 2_000_000;
+const EXCLUDED_TRACKED_FILES = new Set(["scripts/secret_scan.mjs"]);
+const EXCLUDED_PREFIXES = [
+  "node_modules/",
+  ".git/",
+  ".pnpm-store/",
+  ".tmp/",
+  "dist/",
+  "build/",
+  "coverage/",
+];
 
-// File-level skip patterns (extensions / globs)
-const SKIP_EXT = new Set([".md", ".yml", ".yaml"]);
-const MAX_BYTES = 1_000_000; // skip very large files
+const TOKEN_RULES = [
+  { name: "mn_live token", re: /\bmn_live_[A-Za-z0-9_-]{20,}\b/g },
+  { name: "mn_a token", re: /\bmn_a[A-Za-z0-9_-]{20,}\b/g },
+  { name: "sk token", re: /\bsk-[A-Za-z0-9_-]{20,}\b/g },
+];
 
-// Path-based allow/skip
-function shouldSkipFile(filePath) {
-  const lc = filePath.toLowerCase();
-  if (lc.includes("/docs/") || lc.includes("\\docs\\")) return true;
-  if (lc.endsWith(".example")) return true;
-  if (lc.endsWith(".template")) return true;
-  if (lc.endsWith(".env.example") || lc.endsWith(".env.e2e.example")) return true;
-  if (lc.includes("/tests/") || lc.includes("\\tests\\")) return true;
-  if (lc.includes("/.github/") || lc.includes("\\.github\\")) {
-    const ext = path.extname(filePath);
-    if (SKIP_EXT.has(ext)) return true;
-  }
-  const ext = path.extname(filePath);
-  if (SKIP_EXT.has(ext)) return true;
-  return false;
-}
-
-const RULES = [
-  { name: "stripe_live_key", re: /sk_live_[0-9a-zA-Z]{16,}/ },
-  { name: "stripe_test_key", re: /sk_test_[0-9a-zA-Z]{16,}/ },
-  { name: "stripe_webhook_secret", re: /whsec_[0-9a-zA-Z]{16,}/ },
-  { name: "slack_bot_token", re: /xoxb-[0-9]{10,}-[0-9]{10,}-[0-9A-Za-z]{10,}/ },
-  { name: "private_key", re: /-----BEGIN (RSA |EC |DSA |)PRIVATE KEY-----/ },
-  { name: "openai_key", re: /sk-[A-Za-z0-9]{32,}/ },
-  // Env assignments (variable name plus plausible value on same line)
+const ENV_ASSIGN_RULES = [
   {
-    name: "env_assignment",
-    re: /(SUPABASE_SERVICE_ROLE_KEY|MASTER_ADMIN_TOKEN|API_KEY_SALT|OPENAI_API_KEY|STRIPE_SECRET_KEY|STRIPE_WEBHOOK_SECRET)\s*[:=]\s*["']?[A-Za-z0-9_\-]{24,}["']?/,
+    name: "SUPABASE_SERVICE_ROLE_KEY assignment",
+    key: "SUPABASE_SERVICE_ROLE_KEY",
+    re: /\bSUPABASE_SERVICE_ROLE_KEY\b\s*[:=]\s*["'`]?([^\s"'`,]+)/g,
+    minLength: 20,
+  },
+  {
+    name: "MASTER_ADMIN_TOKEN assignment",
+    key: "MASTER_ADMIN_TOKEN",
+    re: /\bMASTER_ADMIN_TOKEN\b\s*[:=]\s*["'`]?([^\s"'`,]+)/g,
+    minLength: 16,
+  },
+  {
+    name: "OPENAI_API_KEY assignment",
+    key: "OPENAI_API_KEY",
+    re: /\bOPENAI_API_KEY\b\s*[:=]\s*["'`]?([^\s"'`,]+)/g,
+    minLength: 16,
   },
 ];
 
-let scanned = 0;
-let skipped = 0;
-const matches = [];
-
-function shouldSkipDir(dirName) {
-  return SKIP_DIRS.has(dirName);
+function normalizePath(filePath) {
+  return filePath.replace(/\\/g, "/");
 }
 
-function scanFile(filePath) {
-  if (shouldSkipFile(filePath)) {
-    skipped += 1;
+function runGit(args, allowFailure = false) {
+  try {
+    return execFileSync("git", args, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: 10 * 1024 * 1024,
+    });
+  } catch (error) {
+    if (allowFailure) return String(error.stdout || "");
+    throw error;
+  }
+}
+
+function isAllZeroSha(value) {
+  return !value || /^0+$/.test(value);
+}
+
+function redact(value) {
+  if (!value) return "***";
+  if (value.length <= 8) return "***";
+  return `${value.slice(0, 4)}***${value.slice(-4)}`;
+}
+
+function cleanValue(value) {
+  return value.replace(/^[("'{`]+/, "").replace(/[)"'}`,;]+$/, "");
+}
+
+function isLikelyPlaceholder(value) {
+  const lower = value.toLowerCase();
+  if (!lower) return true;
+  if (lower === "stub" || lower === "dummy" || lower === "admin") return true;
+  if (lower === "staging_admin_token" || lower === "prod_admin_token") return true;
+  if (lower.includes("dev_admin")) return true;
+  if (lower.startsWith("mn_dev_")) return true;
+  if (lower.endsWith("_admin_token")) return true;
+  if (lower.includes("example")) return true;
+  if (lower.includes("placeholder")) return true;
+  if (lower.includes("changeme")) return true;
+  if (lower.includes("replace")) return true;
+  if (lower.endsWith("_test") || lower.endsWith("_stub")) return true;
+  if (lower === "..." || /^x{6,}$/.test(lower)) return true;
+  if (lower.startsWith("${{") || lower.startsWith("${") || lower.startsWith("$(")) return true;
+  if (lower.startsWith("<") && lower.endsWith(">")) return true;
+  return false;
+}
+
+function shouldSkipFile(filePath) {
+  const normalized = normalizePath(filePath);
+  if (EXCLUDED_TRACKED_FILES.has(normalized)) return true;
+  return EXCLUDED_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+}
+
+function addFinding(findings, finding) {
+  const key = `${finding.source}|${finding.file}|${finding.line}|${finding.rule}|${finding.match}`;
+  if (!findings.seen.has(key)) {
+    findings.seen.add(key);
+    findings.items.push(finding);
+  }
+}
+
+function inspectLine(line, filePath, lineNumber, source, findings) {
+  if (line.includes("${{ secrets.") || line.includes("${{ env.")) {
     return;
   }
-  try {
-    const stat = fs.statSync(filePath);
-    if (!stat.isFile() || stat.size > MAX_BYTES) return;
-    const text = fs.readFileSync(filePath, "utf8");
-    scanned += 1;
-    for (const rule of RULES) {
-      if (rule.re.test(text)) {
-        matches.push({ rule: rule.name, file: filePath });
+  const exampleContext = /(sample|example|fixture|dummy|placeholder)/i.test(line);
+
+  for (const rule of TOKEN_RULES) {
+    const matches = line.matchAll(rule.re);
+    for (const match of matches) {
+      const candidate = match[0];
+      if (exampleContext) continue;
+      if (isLikelyPlaceholder(candidate)) continue;
+      addFinding(findings, {
+        source,
+        file: filePath,
+        line: lineNumber,
+        rule: rule.name,
+        match: candidate,
+      });
+    }
+  }
+
+  for (const rule of ENV_ASSIGN_RULES) {
+    const matches = line.matchAll(rule.re);
+    for (const match of matches) {
+      const rawValue = cleanValue(match[1] || "");
+      if (!rawValue || rawValue.length < rule.minLength) continue;
+      if (isLikelyPlaceholder(rawValue)) continue;
+      if (rule.key === "OPENAI_API_KEY" && !/^sk-/i.test(rawValue)) continue;
+      addFinding(findings, {
+        source,
+        file: filePath,
+        line: lineNumber,
+        rule: rule.name,
+        match: rawValue,
+      });
+    }
+  }
+}
+
+function scanDiffAddedLines(diffText, source, findings) {
+  const lines = diffText.split(/\r?\n/);
+  let currentFile = "";
+  let currentLine = 0;
+
+  for (const line of lines) {
+    if (line.startsWith("+++ ")) {
+      const rawPath = line.slice(4).trim();
+      if (rawPath === "/dev/null") {
+        currentFile = "";
+        currentLine = 0;
+      } else {
+        currentFile = normalizePath(rawPath.startsWith("b/") ? rawPath.slice(2) : rawPath);
       }
+      continue;
     }
-  } catch {
-    // ignore read errors
+
+    const hunk = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (hunk) {
+      currentLine = Number(hunk[1]);
+      continue;
+    }
+
+    if (!currentFile || shouldSkipFile(currentFile)) {
+      continue;
+    }
+
+    if (line.startsWith("+") && !line.startsWith("+++")) {
+      inspectLine(line.slice(1), currentFile, currentLine, source, findings);
+      currentLine += 1;
+      continue;
+    }
+
+    if (line.startsWith("-") && !line.startsWith("---")) {
+      continue;
+    }
+
+    if (!line.startsWith("\\")) {
+      currentLine += 1;
+    }
   }
 }
 
-function walk(dir) {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (entry.isDirectory()) {
-      if (shouldSkipDir(entry.name)) continue;
-      walk(path.join(dir, entry.name));
-    } else if (entry.isFile()) {
-      scanFile(path.join(dir, entry.name));
+function scanTrackedFiles(findings) {
+  const listed = runGit(["ls-files", "-z"], true);
+  const files = listed.split("\u0000").filter(Boolean).map(normalizePath);
+
+  for (const file of files) {
+    if (shouldSkipFile(file)) continue;
+
+    let content;
+    try {
+      const buffer = fs.readFileSync(file);
+      if (buffer.length > MAX_FILE_BYTES) continue;
+      if (buffer.includes(0)) continue;
+      content = buffer.toString("utf8");
+    } catch {
+      continue;
+    }
+
+    const lines = content.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i += 1) {
+      inspectLine(lines[i], file, i + 1, "tracked", findings);
     }
   }
 }
 
-walk(process.cwd());
+function parseArgs(argv) {
+  const options = {
+    mode: "staged",
+    base: "",
+    head: "",
+  };
 
-if (matches.length === 0) {
-  console.log(`No secrets detected. scanned=${scanned}, skipped=${skipped}`);
-  process.exit(0);
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === "--ci") options.mode = "ci";
+    if (arg === "--staged") options.mode = "staged";
+    if (arg === "--base" && i + 1 < argv.length) {
+      options.base = argv[i + 1];
+      i += 1;
+    }
+    if (arg === "--head" && i + 1 < argv.length) {
+      options.head = argv[i + 1];
+      i += 1;
+    }
+  }
+
+  return options;
 }
 
-console.log("Potential secrets found (review and remove):");
-for (const m of matches) {
-  console.log(` - ${m.rule}: ${m.file}`);
+function printResult(findings, mode) {
+  if (findings.items.length === 0) {
+    console.log(`Secret scan passed (${mode}).`);
+    return;
+  }
+
+  console.error("Secret scan failed. Potential secret-like values were detected:");
+  for (const finding of findings.items) {
+    console.error(
+      ` - [${finding.source}] ${finding.file}:${finding.line} ${finding.rule} (${redact(finding.match)})`,
+    );
+  }
+  console.error("Remove secrets from tracked files/diffs and use Cloudflare Dashboard secrets instead.");
+  process.exit(1);
 }
-console.log(`scanned=${scanned}, skipped=${skipped}`);
-process.exit(1);
+
+function main() {
+  const options = parseArgs(process.argv.slice(2));
+  const findings = { seen: new Set(), items: [] };
+
+  if (options.mode === "staged") {
+    const stagedDiff = runGit(["diff", "--cached", "--no-color", "--unified=0"], true);
+    if (stagedDiff.trim()) {
+      scanDiffAddedLines(stagedDiff, "staged", findings);
+    }
+    printResult(findings, "staged diff");
+    return;
+  }
+
+  scanTrackedFiles(findings);
+
+  if (!isAllZeroSha(options.base) && !isAllZeroSha(options.head)) {
+    const rangeDiff = runGit(
+      ["diff", "--no-color", "--unified=0", `${options.base}..${options.head}`],
+      true,
+    );
+    if (rangeDiff.trim()) {
+      scanDiffAddedLines(rangeDiff, "range", findings);
+    }
+  }
+
+  printResult(findings, "ci");
+}
+
+main();
