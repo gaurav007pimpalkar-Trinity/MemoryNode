@@ -215,12 +215,13 @@ jobs:
         run: pnpm prod:gate:self-test
 
       - name: Prod gate dry-run
-        if: ${{ hashFiles('.env.gate') != '' }}
+        if: "${{ hashFiles('.env.gate') != '' }}"
         env:
           DRY_RUN: "1"
           CHECK_ENV: "staging"
         run: pnpm prod:gate
 
       - name: Prod gate dry-run skipped
-        if: ${{ hashFiles('.env.gate') == '' }}
-        run: echo "Skipping prod gate dry-run: .env.gate not found in CI."
+        if: "${{ hashFiles('.env.gate') == '' }}"
+        run: |
+          echo "Skipping prod gate dry-run: .env.gate not found in CI."
