@@ -18,6 +18,7 @@ interface Env {
   SUPABASE_SERVICE_ROLE_KEY: string;
   OPENAI_API_KEY: string;
   API_KEY_SALT: string;
+  AUTH_DEBUG?: string;
   MASTER_ADMIN_TOKEN: string;
   EMBEDDINGS_MODE?: string;
   SUPABASE_MODE?: string;
@@ -371,6 +372,30 @@ const jsonResponse = (
 const emptyResponse = (status = 204): Response =>
   new Response(null, { status, headers: { ...getCorsHeaders(), ...getSecurityHeaders() } });
 
+type ErrorLogFields = {
+  error_code?: string;
+  error_message?: string;
+};
+
+async function extractErrorLogFields(response: Response | null): Promise<ErrorLogFields> {
+  if (!response || response.status < 400) return {};
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.toLowerCase().includes("application/json")) return {};
+  try {
+    const payload = (await response.clone().json()) as {
+      error?: { code?: unknown; message?: unknown };
+    };
+    const code = typeof payload?.error?.code === "string" ? payload.error.code : undefined;
+    const message = typeof payload?.error?.message === "string" ? payload.error.message : undefined;
+    return {
+      ...(code ? { error_code: code } : {}),
+      ...(message ? { error_message: redact(message, "message") as string } : {}),
+    };
+  } catch {
+    return {};
+  }
+}
+
 function ensureRateLimitDo(env: Env): void {
   const ns = env.RATE_LIMIT_DO as unknown as { idFromName?: unknown; get?: unknown };
   if (!ns || typeof ns.idFromName !== "function" || typeof ns.get !== "function") {
@@ -422,15 +447,17 @@ export default {
     const originAllowed = isOriginAllowed(origin, allowlist);
     const cors = makeCorsHeaders(origin, allowlist, request.headers);
     setCorsHeadersForRequest(cors);
-    if (allowlist && !originAllowed) {
-      return jsonResponse({ error: { code: "CORS_DENY", message: "Origin not allowed" } }, 403);
-    }
     const url = new URL(request.url);
     setSecurityHeadersForRequest(url.pathname);
     let supabase: SupabaseClient | null = null;
     const auditCtx: { workspaceId?: string; apiKeyId?: string } = {};
     let response: Response | null = null;
     try {
+      if (allowlist && !originAllowed) {
+        response = jsonResponse({ error: { code: "CORS_DENY", message: "Origin not allowed" } }, 403);
+        return response;
+      }
+
       ensureRateLimitDo(env);
 
       if (request.method === "OPTIONS") {
@@ -548,12 +575,16 @@ export default {
       return response;
     } catch (error: unknown) {
       const status = isApiError(error) ? error.status ?? 500 : 500;
+      const errorCode = isApiError(error) ? error.code : "INTERNAL";
+      const safeMessage = redact((error as Error)?.message, "message");
       if (status >= 500) {
         console.error("Unhandled error", {
           request_id: requestId,
           route: new URL(request.url).pathname,
           method: request.method,
-          message: redact((error as Error)?.message, "message"),
+          error_code: errorCode,
+          error_message: safeMessage,
+          message: safeMessage,
           stack: redact((error as Error)?.stack, "stack"),
         });
       }
@@ -572,15 +603,19 @@ export default {
       return response;
     } finally {
       await emitAuditLog(request, response, started, ip, env, supabase, auditCtx, requestId);
-      const latency = Date.now() - started;
+      const durationMs = Date.now() - started;
+      const errorFields = await extractErrorLogFields(response);
       console.log(
         JSON.stringify({
           event_name: "request_summary",
+          workspace_id: auditCtx.workspaceId ?? null,
           route: url.pathname,
           method: request.method,
           status: response?.status ?? 0,
-          latency_ms: latency,
+          duration_ms: durationMs,
+          latency_ms: durationMs,
           request_id: requestId,
+          ...errorFields,
         }),
       );
       clearCorsHeadersForRequest();
@@ -736,6 +771,9 @@ function createStubSupabase(env: Env) {
     insert(payload: StubRow | StubRow[]) {
       const rows = Array.isArray(payload) ? payload : [payload];
       rows.forEach((r) => {
+        if (table === "api_keys" && !Object.prototype.hasOwnProperty.call(r, "revoked_at")) {
+          (r as Record<string, unknown>).revoked_at = null;
+        }
         if (!r.id) (r as Record<string, unknown>).id = crypto.randomUUID();
         db[table].push(structuredClone(r));
       });
@@ -1228,15 +1266,26 @@ async function authenticate(
   if (saltOutcome.mismatchFatal) {
     throw createHttpError(500, "CONFIG_ERROR", "API key salt mismatch between env and database");
   }
-  const hashed = await sha256Hex(saltOutcome.salt + rawKey);
+  const hashed = await hashApiKey(rawKey, saltOutcome.salt);
   const { data, error } = await supabase
     .from("api_keys")
     .select("id, workspace_id, workspaces(plan, plan_status)")
     .eq("key_hash", hashed)
     .is("revoked_at", null)
     .single();
+  const authMatched = !error && Boolean(data?.workspace_id);
+  if ((env.AUTH_DEBUG ?? "").trim() === "1") {
+    const errorCode = typeof (error as { code?: unknown } | null)?.code === "string"
+      ? (error as { code: string }).code
+      : undefined;
+    console.info("auth_debug_verify", {
+      hash_prefix: hashed.slice(0, 12),
+      matched: authMatched,
+      ...(errorCode ? { error_code: errorCode } : {}),
+    });
+  }
 
-  if (error || !data?.workspace_id) {
+  if (!authMatched) {
     throw createHttpError(401, "UNAUTHORIZED", "Invalid API key");
   }
 
@@ -1835,17 +1884,21 @@ async function sha256Hex(input: string): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+async function hashApiKey(rawKey: string, salt: string): Promise<string> {
+  return sha256Hex(salt + rawKey);
+}
+
 let cachedSalt: string | null = null;
 async function getApiKeySalt(
   env: Env,
   supabase: SupabaseClient,
 ): Promise<{ salt: string; mismatchFatal: boolean }> {
   const envSalt = env.API_KEY_SALT || "";
-  if (cachedSalt !== null && envSalt === "") return { salt: cachedSalt, mismatchFatal: false };
-
-  const { data } = await supabase.from("app_settings").select("api_key_salt").limit(1).single();
+  const { data, error } = await supabase.from("app_settings").select("api_key_salt").limit(1).single();
   const dbSalt = (data as { api_key_salt?: string } | null)?.api_key_salt ?? "";
-  if (!cachedSalt) cachedSalt = dbSalt;
+  if (error && !envSalt && cachedSalt !== null) {
+    return { salt: cachedSalt, mismatchFatal: false };
+  }
 
   if (envSalt && dbSalt && envSalt !== dbSalt) {
     const requestId = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : "";
@@ -1853,7 +1906,7 @@ async function getApiKeySalt(
     return { salt: envSalt, mismatchFatal: true };
   }
 
-  const saltToUse = envSalt || dbSalt || "";
+  const saltToUse = envSalt || dbSalt || cachedSalt || "";
   cachedSalt = saltToUse;
   return { salt: saltToUse, mismatchFatal: false };
 }
@@ -2440,8 +2493,11 @@ async function handleCreateApiKey(
   }
 
   const rawKey = generateApiKey();
-  const salt = await getApiKeySalt(env, supabase);
-  const keyHash = await sha256Hex(salt + rawKey);
+  const saltOutcome = await getApiKeySalt(env, supabase);
+  const keyHash = await hashApiKey(rawKey, saltOutcome.salt);
+  if ((env.AUTH_DEBUG ?? "").trim() === "1") {
+    console.info("auth_debug_create", { hash_prefix: keyHash.slice(0, 12) });
+  }
 
   const { data, error } = await supabase
     .from("api_keys")

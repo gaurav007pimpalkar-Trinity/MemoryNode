@@ -45,8 +45,8 @@ jobs:
           BASE_URL: ${{ secrets.BASE_URL }}
           EMBEDDINGS_MODE: stub
         run: |
-          chmod +x scripts/e2e_smoke.sh
-          ./scripts/e2e_smoke.sh
+          chmod +x scripts/verify_e2e.sh
+          ./scripts/verify_e2e.sh
 
       - name: Skip notice
         if: ${{ steps.secrets_check.outputs.has_secrets != 'true' }}

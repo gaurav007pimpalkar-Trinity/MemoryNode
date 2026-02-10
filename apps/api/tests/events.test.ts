@@ -27,6 +27,9 @@ vi.mock("stripe", () => {
 type EventRow = {
   event_name: string;
   workspace_id: string;
+  route?: string | null;
+  method?: string | null;
+  status?: number | null;
 };
 
 type SupabaseMock = SupabaseClient & { events: EventRow[] };
@@ -86,9 +89,33 @@ function makeSupabase(options?: {
               }),
             }),
           }),
-          insert: (rows: Array<{ event_name: string; workspace_id: string }> | { event_name: string; workspace_id: string }) => {
+          insert: (
+            rows:
+              | Array<{
+                  event_name: string;
+                  workspace_id: string;
+                  route?: string | null;
+                  method?: string | null;
+                  status?: number | null;
+                }>
+              | {
+                  event_name: string;
+                  workspace_id: string;
+                  route?: string | null;
+                  method?: string | null;
+                  status?: number | null;
+                },
+          ) => {
             const list = Array.isArray(rows) ? rows : [rows];
-            list.forEach((r) => events.push({ event_name: r.event_name, workspace_id: r.workspace_id }));
+            list.forEach((r) =>
+              events.push({
+                event_name: r.event_name,
+                workspace_id: r.workspace_id,
+                route: r.route ?? null,
+                method: r.method ?? null,
+                status: r.status ?? null,
+              }),
+            );
             return { error: null };
           },
         };
@@ -186,6 +213,12 @@ const env = {
     await handleCreateMemory(req, env, supabase, {}, "req-2");
     const first = supabase.events.filter((e: EventRow) => e.event_name === "first_ingest_success");
     expect(first.length).toBe(1);
+    expect(first[0]).toMatchObject({
+      workspace_id: "ws1",
+      route: "/v1/memories",
+      method: "POST",
+      status: 200,
+    });
   });
 
   it("emits cap_exceeded when usage over limit", async () => {

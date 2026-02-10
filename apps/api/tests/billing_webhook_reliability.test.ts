@@ -1,22 +1,28 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
+const stripeMocks = {
+  customers: { create: vi.fn() },
+  checkout: { sessions: { create: vi.fn() } },
+  billingPortal: { sessions: { create: vi.fn() } },
+  webhooks: { constructEvent: vi.fn() },
+};
+
 vi.mock("stripe", () => {
-  const ctor = vi.fn(() => ({
-    customers: { create: vi.fn() },
-    checkout: { sessions: { create: vi.fn() } },
-    billingPortal: { sessions: { create: vi.fn() } },
-    webhooks: { constructEvent: vi.fn() },
-  }));
-  ctor.createFetchHttpClient = vi.fn(() => ({}));
-  ctor.createSubtleCryptoProvider = vi.fn(() => ({}));
-  return { __esModule: true, default: ctor, Stripe: ctor };
+  return {
+    default: class StripeMock {
+      static createFetchHttpClient = vi.fn(() => ({}));
+      static createSubtleCryptoProvider = vi.fn(() => ({}));
+      customers = stripeMocks.customers;
+      checkout = stripeMocks.checkout;
+      billingPortal = stripeMocks.billingPortal;
+      webhooks = stripeMocks.webhooks;
+      constructor() {}
+    },
+  };
 });
 
 import { handleBillingWebhook } from "../src/index.js";
-
-const stripeCtor = (await import("stripe")).default as unknown as vi.Mock;
-stripeCtor.mockClear();
 
 const baseEnv = {
   SUPABASE_URL: "",
@@ -80,7 +86,11 @@ function makeSupabase(workspaceExists: boolean): SupabaseClient {
 }
 
 afterEach(() => {
-  stripeCtor.mockClear();
+  vi.restoreAllMocks();
+  stripeMocks.customers.create.mockReset();
+  stripeMocks.checkout.sessions.create.mockReset();
+  stripeMocks.billingPortal.sessions.create.mockReset();
+  stripeMocks.webhooks.constructEvent.mockReset();
 });
 
 describe("Stripe webhook reliability", () => {
@@ -92,25 +102,16 @@ describe("Stripe webhook reliability", () => {
       body,
     });
 
-    // Make constructEvent return a benign event
-    stripeCtor.mockReturnValueOnce({
-      customers: { create: vi.fn() },
-      checkout: { sessions: { create: vi.fn() } },
-      billingPortal: { sessions: { create: vi.fn() } },
-      webhooks: {
-        constructEvent: vi.fn().mockReturnValue({
-          type: "invoice.paid",
-          data: { object: { customer: "cus_123" } },
-        }),
-      },
+    stripeMocks.webhooks.constructEvent.mockReturnValue({
+      type: "invoice.paid",
+      data: { object: { customer: "cus_123" } },
     });
 
     const res = await handleBillingWebhook(req, baseEnv as Record<string, unknown>, makeSupabase(false), "req-raw");
     expect(res.status).toBe(200);
 
-    const instance = stripeCtor.mock.results.at(-1)?.value;
-    expect(instance.webhooks.constructEvent).toHaveBeenCalledTimes(1);
-    const [raw] = instance.webhooks.constructEvent.mock.calls[0];
+    expect(stripeMocks.webhooks.constructEvent).toHaveBeenCalledTimes(1);
+    const [raw] = stripeMocks.webhooks.constructEvent.mock.calls[0];
     expect(typeof raw).toBe("string");
     expect(raw).toBe('{"hello":"world"}');
   });
@@ -130,14 +131,7 @@ describe("Stripe webhook reliability", () => {
         },
       },
     };
-    stripeCtor.mockReturnValueOnce({
-      customers: { create: vi.fn() },
-      checkout: { sessions: { create: vi.fn() } },
-      billingPortal: { sessions: { create: vi.fn() } },
-      webhooks: {
-        constructEvent: vi.fn().mockReturnValue(eventObj),
-      },
-    });
+    stripeMocks.webhooks.constructEvent.mockReturnValue(eventObj);
 
     const res = await handleBillingWebhook(
       new Request("http://localhost/v1/billing/webhook", {
@@ -174,14 +168,7 @@ describe("Stripe webhook reliability", () => {
       },
     };
 
-    stripeCtor.mockReturnValueOnce({
-      customers: { create: vi.fn() },
-      checkout: { sessions: { create: vi.fn() } },
-      billingPortal: { sessions: { create: vi.fn() } },
-      webhooks: {
-        constructEvent: vi.fn().mockReturnValue(eventObj),
-      },
-    });
+    stripeMocks.webhooks.constructEvent.mockReturnValue(eventObj);
 
     const res = await handleBillingWebhook(
       new Request("http://localhost/v1/billing/webhook", {
