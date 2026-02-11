@@ -88,6 +88,7 @@ __pycache__/
 /docs/CTO_ONBOARDING_REPORT.md
 /docs/CTO_EVIDENCE_INDEX.md
 /docs/CTO_ARCHITECTURE_ASCII.md
+/docs/generated/
 /ARTIFACTS/
 /.tmp/cto_cmd/results.json
 /.tmp/cto_cmd/*.log

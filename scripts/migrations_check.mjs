@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import {
   formatManifestSummary,
   getMigrationManifest,
@@ -25,6 +26,15 @@ function readText(filePath) {
   return fs.readFileSync(path.resolve(filePath), "utf8");
 }
 
+function listTrackedFiles() {
+  const raw = execFileSync("git", ["ls-files", "-z"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: 10 * 1024 * 1024,
+  });
+  return raw.split("\u0000").filter(Boolean).map((file) => file.replace(/\\/g, "/"));
+}
+
 function checkDocsManifestTokens(manifest, issues) {
   for (const docPath of DOCS_REQUIRE_MANIFEST) {
     const text = readText(docPath);
@@ -39,32 +49,25 @@ function checkDocsManifestTokens(manifest, issues) {
 }
 
 function checkNoStaleRangeMentions(manifest, issues) {
-  const docsRoot = path.resolve("docs");
-  const stack = [docsRoot];
-  while (stack.length > 0) {
-    const current = stack.pop();
-    const entries = fs.readdirSync(current, { withFileTypes: true });
-    for (const entry of entries) {
-      const full = path.join(current, entry.name);
-      if (entry.isDirectory()) {
-        stack.push(full);
-        continue;
-      }
-      if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
+  const trackedDocs = listTrackedFiles().filter((file) => {
+    if (!file.startsWith("docs/")) return false;
+    if (!file.endsWith(".md")) return false;
+    if (file.startsWith("docs/generated/")) return false;
+    return true;
+  });
 
-      const rel = path.relative(process.cwd(), full).replace(/\\/g, "/");
-      const lines = readText(rel).split(/\r?\n/);
-      for (let i = 0; i < lines.length; i += 1) {
-        const line = lines[i];
-        if (
-          line.includes("001_init.sql") &&
-          line.includes("016_webhook_events.sql") &&
-          !line.includes(manifest.latestFile)
-        ) {
-          issues.push(
-            `${rel}:${i + 1} appears to hard-code an outdated migration range ending at 016_webhook_events.sql.`,
-          );
-        }
+  for (const rel of trackedDocs) {
+    const lines = readText(rel).split(/\r?\n/);
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (
+        line.includes("001_init.sql") &&
+        line.includes("016_webhook_events.sql") &&
+        !line.includes(manifest.latestFile)
+      ) {
+        issues.push(
+          `${rel}:${i + 1} appears to hard-code an outdated migration range ending at 016_webhook_events.sql.`,
+        );
       }
     }
   }
