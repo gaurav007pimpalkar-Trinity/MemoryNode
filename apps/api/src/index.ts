@@ -382,6 +382,7 @@ const getRequestIdHeaders = (): Record<string, string> => {
 };
 
 const REQUEST_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function generateRequestId(): string {
   return typeof crypto.randomUUID === "function" ? crypto.randomUUID() : Math.random().toString(36).slice(2);
@@ -552,7 +553,15 @@ export default {
 
       const memoryIdMatch = url.pathname.match(/^\/v1\/memories\/([^/]+)$/);
       if (memoryIdMatch) {
-        const memoryId = decodeURIComponent(memoryIdMatch[1]);
+        const rawMemoryId = decodeURIComponent(memoryIdMatch[1]);
+        const memoryId = rawMemoryId.split("?")[0].split("#")[0].trim();
+        if (memoryId.startsWith("=") || !UUID_RE.test(memoryId)) {
+          response = jsonResponse(
+            { error: { code: "BAD_REQUEST", message: "memory_id must be a valid UUID" } },
+            400,
+          );
+          return response;
+        }
         if (request.method === "GET") {
           response = await handleGetMemory(request, env, supabase, memoryId, auditCtx);
           return response;
@@ -714,7 +723,7 @@ function createSupabaseClient(env: Env): SupabaseClient {
 }
 
 type StubRow = Record<string, unknown>;
-type StubFilter = { col: string; val: unknown; op?: "contains" | "gte" | "lte" };
+type StubFilter = { col: string; val: unknown; op: "eq" | "in" | "contains" | "gte" | "lte" };
 
 let stubState: {
   db: {
@@ -755,10 +764,15 @@ function createStubSupabase(env: Env) {
       filters.every((f) => {
         if (f.op === "contains") {
           const target = r[f.col] as Record<string, unknown>;
-          return typeof target === "object" && target !== null && Object.entries(f.val as Record<string, unknown>).every(([k, v]) => target[k] === v);
+          return (
+            typeof target === "object" &&
+            target !== null &&
+            Object.entries(f.val as Record<string, unknown>).every(([k, v]) => target[k] === v)
+          );
         }
-        if (f.val instanceof Set) {
-          return f.val.has(r[f.col]);
+        if (f.op === "in") {
+          const values = Array.isArray(f.val) ? f.val : [];
+          return values.includes(r[f.col]);
         }
         if (f.op === "gte") return (r[f.col] as string) >= (f.val as string);
         if (f.op === "lte") return (r[f.col] as string) <= (f.val as string);
@@ -805,11 +819,11 @@ function createStubSupabase(env: Env) {
 
   const tableBuilder = (table: keyof typeof db, filters: StubFilter[] = []) => ({
     eq(col: string, val: unknown) {
-      filters.push({ col, val });
+      filters.push({ col, val, op: "eq" });
       return tableBuilder(table, filters);
     },
     in(col: string, vals: unknown[]) {
-      filters.push({ col, val: new Set(vals) });
+      filters.push({ col, val: [...vals], op: "in" });
       return tableBuilder(table, filters);
     },
     contains(obj: Record<string, unknown>) {
@@ -858,26 +872,45 @@ function createStubSupabase(env: Env) {
     update(values: Record<string, unknown>) {
       return {
         eq(col: string, val: unknown) {
-          const rows = applyFilters(db[table], filters.concat({ col, val }));
+          const rows = applyFilters(db[table], filters.concat({ col, val, op: "eq" }));
           rows.forEach((r) => Object.assign(r, values));
           return { data: rows, error: null };
         },
       };
     },
     delete(opts?: { count?: "exact" }) {
-      return {
+      const deleteFilters = [...filters];
+      let executed = false;
+      let result: { data: never[]; error: null; count: number | null } = {
+        data: [],
+        error: null,
+        count: null,
+      };
+      const runDelete = () => {
+        if (executed) return result;
+        const rows = applyFilters(db[table], deleteFilters);
+        db[table] = db[table].filter((r) => !rows.includes(r));
+        executed = true;
+        result = { data: [], error: null, count: opts?.count ? rows.length : null };
+        return result;
+      };
+      const chain = {
         eq(col: string, val: unknown) {
-          const rows = applyFilters(db[table], filters.concat({ col, val }));
-          db[table] = db[table].filter((r) => !rows.includes(r));
-          return { data: [], error: null, count: opts?.count ? rows.length : null };
+          deleteFilters.push({ col, val, op: "eq" });
+          return chain;
         },
         in(col: string, vals: unknown[]) {
-          const rows = applyFilters(db[table], filters.concat({ col, val: null }));
-          const toDelete = rows.filter((r) => vals.includes(r[col] as string));
-          db[table] = db[table].filter((r) => !toDelete.includes(r));
-          return { data: [], error: null, count: opts?.count ? toDelete.length : null };
+          deleteFilters.push({ col, val: [...vals], op: "in" });
+          return chain;
+        },
+        then<TResult1 = typeof result, TResult2 = never>(
+          onfulfilled?: ((value: typeof result) => TResult1 | PromiseLike<TResult1>) | null,
+          onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+        ) {
+          return Promise.resolve(runDelete()).then(onfulfilled, onrejected);
         },
       };
+      return chain;
     },
     order() {
       return this;
