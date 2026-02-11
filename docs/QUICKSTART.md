@@ -30,6 +30,8 @@ Copy and fill:
 cp .env.example .env
 cp apps/api/.dev.vars.template apps/api/.dev.vars   # if template exists
 ```
+Use templates only; never commit `.env*`/`.dev.vars*` files with real values.
+For deployed environments, set real secrets in Cloudflare (`wrangler secret put <NAME>`).
 Minimum required (local):
 ```
 SUPABASE_URL=...
@@ -45,8 +47,24 @@ STRIPE_PRICE_TEAM=price_team_dummy
 PUBLIC_APP_URL=http://127.0.0.1:4173
 ```
 
-## 3) Apply migrations (Supabase SQL, in order)
-`infra/sql/001_init.sql` → `002_rpc.sql` → `003_usage_rpc.sql` → `004_workspace_plan.sql` → `005_api_audit_log.sql` → `006_rls.sql` → `007_current_workspace_patch.sql` → `008_membership_rls.sql` → `009_workspace_rpc.sql` → `010_api_keys_mask.sql` → `011_api_key_rpcs.sql` → `012_billing.sql` → `013_events.sql` → `014_activation.sql` → `015_invites.sql` → `016_webhook_events.sql`
+## 3) Apply migrations (canonical path, deterministic)
+Set DB connection and run the scripted migrator (this is the source of truth; do not run SQL files manually out-of-band):
+
+```bash
+DATABASE_URL=postgres://USER:PASSWORD@HOST:5432/DB?sslmode=require pnpm db:migrate
+DATABASE_URL=postgres://USER:PASSWORD@HOST:5432/DB?sslmode=require pnpm db:verify-rls
+DATABASE_URL=postgres://USER:PASSWORD@HOST:5432/DB?sslmode=require pnpm db:verify-schema
+```
+
+You may use `SUPABASE_DB_URL` instead of `DATABASE_URL`.
+
+Print the exact ordered migration manifest from filesystem:
+
+```bash
+pnpm migrations:list
+```
+
+Migration manifest (CI-checked): `MIGRATIONS_TOTAL=22; MIGRATIONS_LATEST=020_webhook_deferred_reconcile.sql`
 
 ## 4) Run the API locally
 ```bash

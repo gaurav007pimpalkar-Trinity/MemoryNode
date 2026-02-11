@@ -34,6 +34,9 @@ coverage/
 .dev.vars
 .dev.vars.*
 !.dev.vars.template
+*credentials*
+*service-account*
+*service_account*
 
 ##########
 # Logs & OS/editor junk
@@ -78,6 +81,17 @@ _founder_notes/
 .tmp/
 .venv/
 __pycache__/
+
+##########
+# Local audit/report artifacts (do not commit)
+##########
+/docs/CTO_ONBOARDING_REPORT.md
+/docs/CTO_EVIDENCE_INDEX.md
+/docs/CTO_ARCHITECTURE_ASCII.md
+/ARTIFACTS/
+/.tmp/cto_cmd/results.json
+/.tmp/cto_cmd/*.log
+/repo_tree_depth3.txt
 
 # Keep lockfile versioned (do not ignore):
 # pnpm-lock.yaml

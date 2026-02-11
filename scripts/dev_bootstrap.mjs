@@ -1,16 +1,40 @@
 #!/usr/bin/env node
+import { execSync } from "node:child_process";
 
 const baseUrl = process.env.MN_BASE_URL || "http://127.0.0.1:8787";
 const adminToken = process.env.MASTER_ADMIN_TOKEN;
 const workspaceName = process.env.WORKSPACE_NAME || "Local Workspace";
 const apiKeyName = process.env.API_KEY_NAME || "default";
+const dbUrl = process.env.SUPABASE_DB_URL || process.env.DATABASE_URL;
+const skipDbChecks = process.env.BOOTSTRAP_SKIP_DB_CHECKS === "1";
 
 if (!adminToken) {
   console.error("MASTER_ADMIN_TOKEN is required in env");
   process.exit(1);
 }
 
+function run(cmd) {
+  console.log(`$ ${cmd}`);
+  execSync(cmd, { stdio: "inherit", env: process.env });
+}
+
+function runDbBootstrapChecks() {
+  if (skipDbChecks) {
+    console.log("Skipping db bootstrap checks (BOOTSTRAP_SKIP_DB_CHECKS=1).");
+    return;
+  }
+  if (!dbUrl) {
+    console.log("Skipping db bootstrap checks (SUPABASE_DB_URL/DATABASE_URL not set).");
+    return;
+  }
+  run("pnpm db:migrate");
+  run("pnpm db:verify-rls");
+  run("pnpm db:verify-schema");
+}
+
 async function main() {
+  runDbBootstrapChecks();
+
   const headers = { "content-type": "application/json", "x-admin-token": adminToken };
 
   const wsRes = await fetch(`${baseUrl}/v1/workspaces`, {

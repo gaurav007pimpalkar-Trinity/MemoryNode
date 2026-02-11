@@ -29,11 +29,17 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Secret scan (tracked files)
+        run: pnpm secrets:check:tracked -- --ci
+
       - name: Secret scan (tracked + commit diff)
         env:
           SCAN_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
           SCAN_HEAD: ${{ github.sha }}
         run: pnpm secrets:check -- --ci --base "$SCAN_BASE" --head "$SCAN_HEAD"
+
+      - name: Migration docs/sequence guard
+        run: pnpm migrations:check
 
       - name: Validate script syntax
         run: |
@@ -67,6 +73,9 @@ jobs:
 
       - name: Typecheck
         run: pnpm typecheck
+
+      - name: Build
+        run: pnpm -w build
 
       - name: Test
         run: pnpm test
@@ -196,20 +205,21 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Lint
-        run: pnpm lint
-
-      - name: Typecheck
-        run: pnpm typecheck
-
-      - name: Test
-        run: pnpm test
+      - name: Release gate (canonical)
+        env:
+          CHECK_ENV: staging
+          CHECK_CONFIG_MODE: ci
+          SUPABASE_URL: https://memorynode-ci.supabase.co
+          SUPABASE_SERVICE_ROLE_KEY: ci_supabase_service_role_key_value
+          API_KEY_SALT: ci_api_key_salt_value
+          MASTER_ADMIN_TOKEN: ci_master_admin_token_value
+          DATABASE_URL: postgresql://ci_user:ci_pass@ci-db.invalid:5432/memorynode?sslmode=require
+          EMBEDDINGS_MODE: stub
+          BILLING_WEBHOOKS_ENABLED: "0"
+        run: pnpm release:gate
 
       - name: Check example envs are empty
         run: node scripts/check_examples_no_values.mjs
-
-      - name: Secret scan (tracked files)
-        run: pnpm secrets:check -- --ci
 
       - name: Prod gate self-test (must fail on forced command error)
         run: pnpm prod:gate:self-test

@@ -135,6 +135,7 @@ async function main() {
     await bootstrapAuthSchema(freshUrl);
     runNodeScript("scripts/db_migrate.mjs", freshUrl);
     runNodeScript("scripts/db_verify_rls.mjs", freshUrl);
+    runNodeScript("scripts/db_verify_schema.mjs", freshUrl);
 
     console.log(`[drift-test] creating partial database: ${partialDb}`);
     await recreateDatabase(partialDb);
@@ -142,6 +143,7 @@ async function main() {
     await seedLegacyPartialState(partialUrl);
     runNodeScript("scripts/db_migrate.mjs", partialUrl);
     runNodeScript("scripts/db_verify_rls.mjs", partialUrl);
+    runNodeScript("scripts/db_verify_schema.mjs", partialUrl);
 
     console.log("[drift-test] migration drift check passed on fresh + legacy-partial states.");
   } finally {

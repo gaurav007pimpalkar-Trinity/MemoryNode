@@ -28,5 +28,8 @@ The repository ignores local secret/temp files, including:
 
 - Local pre-commit style check:
   - `pnpm secrets:check`
+- Full tracked-file check:
+  - `pnpm secrets:check:tracked`
 - CI runs the same scanner on every push/pull_request and fails on matches.
 - Scanner output is redacted and never prints full secret values.
+- Rotation runbook + incident checklist: `docs/SECURITY.md`

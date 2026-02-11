@@ -1,6 +1,15 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
+import {
+  detectSecretReason,
+  extractEnvStyleAssignment,
+  isEnvLikePath,
+  isLikelyPlaceholder,
+  normalizeSecretValue,
+  redactSecret,
+  scanWranglerTomlSecrets,
+} from "./lib/secret_scan_core.mjs";
 
 const MAX_FILE_BYTES = 2_000_000;
 const EXCLUDED_TRACKED_FILES = new Set(["scripts/secret_scan.mjs", "staged_files.txt"]);
@@ -17,28 +26,12 @@ const EXCLUDED_PREFIXES = [
 const TOKEN_RULES = [
   { name: "mn_live token", re: /\bmn_live_[A-Za-z0-9_-]{20,}\b/g },
   { name: "mn_a token", re: /\bmn_a[A-Za-z0-9_-]{20,}\b/g },
-  { name: "sk token", re: /\bsk-[A-Za-z0-9_-]{20,}\b/g },
-];
-
-const ENV_ASSIGN_RULES = [
-  {
-    name: "SUPABASE_SERVICE_ROLE_KEY assignment",
-    key: "SUPABASE_SERVICE_ROLE_KEY",
-    re: /\bSUPABASE_SERVICE_ROLE_KEY\b\s*[:=]\s*["'`]?([^\s"'`,]+)/g,
-    minLength: 20,
-  },
-  {
-    name: "MASTER_ADMIN_TOKEN assignment",
-    key: "MASTER_ADMIN_TOKEN",
-    re: /\bMASTER_ADMIN_TOKEN\b\s*[:=]\s*["'`]?([^\s"'`,]+)/g,
-    minLength: 16,
-  },
-  {
-    name: "OPENAI_API_KEY assignment",
-    key: "OPENAI_API_KEY",
-    re: /\bOPENAI_API_KEY\b\s*[:=]\s*["'`]?([^\s"'`,]+)/g,
-    minLength: 16,
-  },
+  { name: "OpenAI-style key", re: /\bsk-[A-Za-z0-9_-]{20,}\b/g },
+  { name: "Router-style key", re: /\brk_[A-Za-z0-9_-]{20,}\b/g },
+  { name: "Stripe webhook secret", re: /\bwhsec_[A-Za-z0-9_-]{10,}\b/g },
+  { name: "Slack token", re: /\bxox[a-z]-[A-Za-z0-9-]{10,}\b/gi },
+  { name: "Google API key", re: /\bAIza[0-9A-Za-z\-_]{16,}\b/g },
+  { name: "PEM private key", re: /-----BEGIN [A-Z ]*PRIVATE KEY-----/g },
 ];
 
 function normalizePath(filePath) {
@@ -62,33 +55,8 @@ function isAllZeroSha(value) {
   return !value || /^0+$/.test(value);
 }
 
-function redact(value) {
-  if (!value) return "***";
-  if (value.length <= 8) return "***";
-  return `${value.slice(0, 4)}***${value.slice(-4)}`;
-}
-
-function cleanValue(value) {
-  return value.replace(/^[("'{`]+/, "").replace(/[)"'}`,;]+$/, "");
-}
-
-function isLikelyPlaceholder(value) {
-  const lower = value.toLowerCase();
-  if (!lower) return true;
-  if (lower === "stub" || lower === "dummy" || lower === "admin") return true;
-  if (lower === "staging_admin_token" || lower === "prod_admin_token") return true;
-  if (lower.includes("dev_admin")) return true;
-  if (lower.startsWith("mn_dev_")) return true;
-  if (lower.endsWith("_admin_token")) return true;
-  if (lower.includes("example")) return true;
-  if (lower.includes("placeholder")) return true;
-  if (lower.includes("changeme")) return true;
-  if (lower.includes("replace")) return true;
-  if (lower.endsWith("_test") || lower.endsWith("_stub")) return true;
-  if (lower === "..." || /^x{6,}$/.test(lower)) return true;
-  if (lower.startsWith("${{") || lower.startsWith("${") || lower.startsWith("$(")) return true;
-  if (lower.startsWith("<") && lower.endsWith(">")) return true;
-  return false;
+function isWranglerTomlPath(filePath) {
+  return normalizePath(filePath).toLowerCase().endsWith("wrangler.toml");
 }
 
 function shouldSkipFile(filePath) {
@@ -105,7 +73,7 @@ function addFinding(findings, finding) {
   }
 }
 
-function inspectLine(line, filePath, lineNumber, source, findings) {
+function inspectTokenRules(line, filePath, lineNumber, source, findings) {
   if (line.includes("${{ secrets.") || line.includes("${{ env.")) {
     return;
   }
@@ -114,7 +82,8 @@ function inspectLine(line, filePath, lineNumber, source, findings) {
   for (const rule of TOKEN_RULES) {
     const matches = line.matchAll(rule.re);
     for (const match of matches) {
-      const candidate = match[0];
+      const candidate = normalizeSecretValue(match[0] || "");
+      if (!candidate) continue;
       if (exampleContext) continue;
       if (isLikelyPlaceholder(candidate)) continue;
       addFinding(findings, {
@@ -126,22 +95,47 @@ function inspectLine(line, filePath, lineNumber, source, findings) {
       });
     }
   }
+}
 
-  for (const rule of ENV_ASSIGN_RULES) {
-    const matches = line.matchAll(rule.re);
-    for (const match of matches) {
-      const rawValue = cleanValue(match[1] || "");
-      if (!rawValue || rawValue.length < rule.minLength) continue;
-      if (isLikelyPlaceholder(rawValue)) continue;
-      if (rule.key === "OPENAI_API_KEY" && !/^sk-/i.test(rawValue)) continue;
-      addFinding(findings, {
-        source,
-        file: filePath,
-        line: lineNumber,
-        rule: rule.name,
-        match: rawValue,
-      });
-    }
+function inspectAssignmentLine(line, filePath, lineNumber, source, findings, allowEntropy) {
+  if (line.includes("${{ secrets.") || line.includes("${{ env.")) {
+    return;
+  }
+  const assignment = extractEnvStyleAssignment(line);
+  if (!assignment) return;
+
+  const reason = detectSecretReason(assignment.key, assignment.rawValue, {
+    allowSensitiveName: true,
+    allowEntropy,
+  });
+  if (!reason) return;
+
+  addFinding(findings, {
+    source,
+    file: filePath,
+    line: lineNumber,
+    rule: `${assignment.key} assignment (${reason})`,
+    match: normalizeSecretValue(assignment.rawValue),
+  });
+}
+
+function scanEnvLikeFileContent(content, filePath, source, findings) {
+  const lines = content.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    inspectAssignmentLine(lines[i], filePath, i + 1, source, findings, true);
+  }
+}
+
+function scanWranglerFileContent(content, filePath, source, findings) {
+  const wranglerFindings = scanWranglerTomlSecrets(content, filePath);
+  for (const finding of wranglerFindings) {
+    addFinding(findings, {
+      source,
+      file: finding.file,
+      line: finding.line,
+      rule: `${finding.key} in [${finding.section}] (${finding.reason})`,
+      match: finding.value,
+    });
   }
 }
 
@@ -173,7 +167,12 @@ function scanDiffAddedLines(diffText, source, findings) {
     }
 
     if (line.startsWith("+") && !line.startsWith("+++")) {
-      inspectLine(line.slice(1), currentFile, currentLine, source, findings);
+      const added = line.slice(1);
+      inspectTokenRules(added, currentFile, currentLine, source, findings);
+      const shouldScanAssignment = isWranglerTomlPath(currentFile) || isEnvLikePath(currentFile);
+      if (shouldScanAssignment) {
+        inspectAssignmentLine(added, currentFile, currentLine, source, findings, true);
+      }
       currentLine += 1;
       continue;
     }
@@ -205,9 +204,19 @@ function scanTrackedFiles(findings) {
       continue;
     }
 
+    if (isWranglerTomlPath(file)) {
+      scanWranglerFileContent(content, file, "tracked", findings);
+      continue;
+    }
+
+    if (isEnvLikePath(file)) {
+      scanEnvLikeFileContent(content, file, "tracked", findings);
+      continue;
+    }
+
     const lines = content.split(/\r?\n/);
     for (let i = 0; i < lines.length; i += 1) {
-      inspectLine(lines[i], file, i + 1, "tracked", findings);
+      inspectTokenRules(lines[i], file, i + 1, "tracked", findings);
     }
   }
 }
@@ -245,7 +254,7 @@ function printResult(findings, mode) {
   console.error("Secret scan failed. Potential secret-like values were detected:");
   for (const finding of findings.items) {
     console.error(
-      ` - [${finding.source}] ${finding.file}:${finding.line} ${finding.rule} (${redact(finding.match)})`,
+      ` - [${finding.source}] ${finding.file}:${finding.line} ${finding.rule} (${redactSecret(finding.match)})`,
     );
   }
   console.error("Remove secrets from tracked files/diffs and use Cloudflare Dashboard secrets instead.");

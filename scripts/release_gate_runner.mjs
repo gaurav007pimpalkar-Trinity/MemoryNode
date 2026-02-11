@@ -1,13 +1,18 @@
 #!/usr/bin/env node
 /**
- * Cross-platform release gate runner (no DB).
- * Sets CHECK_ENV=production and runs:
- *   check:typed-entry -> check:wrangler -> check:config -> lint -> typecheck -> test:ci
+ * Cross-platform release gate runner (no DB mutation).
+ * Required checks:
+ *   - lint, typecheck, test
+ *   - migrations:check
+ *   - secrets scans (env + tracked files)
+ * Optional:
+ *   - build when RELEASE_INCLUDE_BUILD=1
  */
 
 import { execSync } from "node:child_process";
 
-const env = { ...process.env, CHECK_ENV: process.env.CHECK_ENV ?? "production" };
+const inferredCheckEnv = process.env.CHECK_ENV ?? (process.env.CI ? "staging" : "production");
+const env = { ...process.env, CHECK_ENV: inferredCheckEnv };
 
 function run(cmd) {
   console.log(`\n$ ${cmd}`);
@@ -15,12 +20,23 @@ function run(cmd) {
 }
 
 try {
-  run("pnpm check:typed-entry");
-  run("pnpm check:wrangler");
-  run("pnpm check:config");
-  run("pnpm lint");
-  run("pnpm typecheck");
-  run("pnpm test:ci");
+  const checks = [
+    "pnpm check:typed-entry",
+    "pnpm check:wrangler",
+    "pnpm check:config",
+    "pnpm secrets:check",
+    "pnpm secrets:check:tracked",
+    "pnpm migrations:check",
+    "pnpm -w lint",
+    "pnpm -w typecheck",
+    "pnpm -w test",
+  ];
+  if ((process.env.RELEASE_INCLUDE_BUILD ?? "").trim() === "1") {
+    checks.push("pnpm -w build");
+  }
+  for (const cmd of checks) {
+    run(cmd);
+  }
 } catch (err) {
   process.exit(err?.status || 1);
 }

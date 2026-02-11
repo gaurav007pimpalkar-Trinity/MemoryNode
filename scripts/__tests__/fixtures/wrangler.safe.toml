@@ -1,0 +1,11 @@
+name = "memorynode-api"
+main = "src/index.ts"
+
+[vars]
+EMBEDDINGS_MODE = "openai"
+RATE_LIMIT_MODE = "on"
+
+[env.staging.vars]
+OPENAI_API_KEY = "<OPENAI_API_KEY>"
+MASTER_ADMIN_TOKEN = "CHANGEME"
+STRIPE_WEBHOOK_SECRET = "REDACTED"
