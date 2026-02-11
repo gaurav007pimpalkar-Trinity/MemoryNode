@@ -78,7 +78,7 @@ if (-not (Get-Command "pnpm" -ErrorAction SilentlyContinue)) {
 $localWranglerJs = Join-Path $root "node_modules/wrangler/bin/wrangler.js"
 $hasLocalWrangler = Test-Path $localWranglerJs
 if (-not $hasLocalWrangler) {
-  Write-Host "info: local wrangler JS not found; will fallback to npx wrangler"
+  Write-Host "info: local wrangler JS not found; will fallback to pnpm exec wrangler"
 }
 
 # Load .dev.vars (key=value per line) without prompting
@@ -270,7 +270,7 @@ try {
 if ($hasLocalWrangler) {
   $wranglerCmd = "node `"$localWranglerJs`" dev --port $($env:PORT)"
 } else {
-  $wranglerCmd = "npx wrangler dev --port $($env:PORT)"
+  $wranglerCmd = "pnpm exec wrangler dev --port $($env:PORT)"
 }
 
 if ($smokeMode -eq "ci") {

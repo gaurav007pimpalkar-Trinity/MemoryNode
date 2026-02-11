@@ -99,8 +99,8 @@ if [[ "$USE_LOCAL_DEV" -eq 1 ]]; then
     exit 1
   fi
 
-  echo "Starting wrangler dev on port $PORT..."
-  pnpm --filter @memorynode/api wrangler dev --port "$PORT" --log-level error >"$LOG" 2>&1 &
+  echo "Starting API dev server on port $PORT..."
+  pnpm --filter @memorynode/api run dev -- --port "$PORT" --log-level error >"$LOG" 2>&1 &
   WRANGLER_PID=$!
 
   printf "Waiting for /healthz"

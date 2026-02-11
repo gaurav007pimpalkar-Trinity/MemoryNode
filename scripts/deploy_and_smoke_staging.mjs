@@ -63,8 +63,8 @@ function main() {
   console.log("[release-check] Deploying to staging (real deploy)");
   run("node scripts/deploy_staging.mjs");
 
-  console.log("[release-check] Post-deploy wiring check (staging)");
-  run("node scripts/post_deploy_check.mjs");
+  console.log("[release-check] Post-deploy validation (staging)");
+  run("node scripts/post_deploy_validate.mjs");
 
   console.log("[release-check] Running live staging smoke");
   run("node scripts/smoke_staging.mjs");

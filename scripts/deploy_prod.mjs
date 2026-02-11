@@ -64,7 +64,7 @@ function run(cmd, extraEnv = {}) {
 }
 
 function runWrangler(args, extraEnv = {}) {
-  const cmd = `npx wrangler ${args}`;
+  const cmd = `pnpm exec wrangler ${args}`;
   console.log(`\n$ (apps/api) ${cmd}`);
   execSync(cmd, { stdio: "inherit", cwd: "apps/api", env: { ...process.env, ...extraEnv } });
 }
@@ -94,7 +94,7 @@ function ensureWranglerAuth() {
     runWrangler("whoami");
   } catch {
     fail(
-      "Wrangler auth missing. Run `pnpm -C apps/api wrangler login` or set CLOUDFLARE_API_TOKEN before deploy.",
+      "Wrangler auth missing. From apps/api run `pnpm exec wrangler login` or set CLOUDFLARE_API_TOKEN before deploy.",
     );
   }
 }

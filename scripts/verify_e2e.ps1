@@ -354,9 +354,9 @@ try {
       throw "ERROR: wrangler.toml is missing durable_objects binding RATE_LIMIT_DO"
     }
 
-    Write-Host "Starting wrangler dev on port $port..."
+    Write-Host "Starting API dev server on port $port..."
     $script:Wrangler = Start-Process -FilePath "pnpm" `
-      -ArgumentList @("--filter", "@memorynode/api", "wrangler", "dev", "--port", "$port", "--log-level", "error") `
+      -ArgumentList @("--filter", "@memorynode/api", "run", "dev", "--", "--port", "$port", "--log-level", "error") `
       -WorkingDirectory $script:Root `
       -RedirectStandardOutput $script:Log `
       -RedirectStandardError $script:Log `

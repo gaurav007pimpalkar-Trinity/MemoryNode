@@ -76,8 +76,8 @@ function main() {
   console.log("[release-check:prod] Deploying to production (real deploy)");
   run("node scripts/deploy_prod.mjs");
 
-  console.log("[release-check:prod] Post-deploy wiring check (prod)");
-  run("node scripts/post_deploy_check.mjs");
+  console.log("[release-check:prod] Post-deploy validation (prod)");
+  run("node scripts/post_deploy_validate.mjs");
 
   console.log("[release-check:prod] Running live prod smoke");
   run("node scripts/smoke_prod.mjs");
