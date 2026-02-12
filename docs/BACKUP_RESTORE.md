@@ -7,7 +7,7 @@
 ## What must be backed up
 - Postgres database (schema + data) — source of truth for MemoryNode.
 - Storage buckets: _none currently used_ (update if added).
-- Idempotency table: `stripe_webhook_events` (important to keep to avoid double-processing on replay).
+- Idempotency table: `payu_webhook_events` (important to keep to avoid double-processing on replay).
 - Secrets/config: stored via Cloudflare `wrangler secret` and CI/CD secrets; back up references/last-rotated dates (never values).
 
 ## Backup options
@@ -41,7 +41,7 @@ pg_dump --schema-only --file=schema_$(date +%Y%m%d%H%M).sql "$PGURL"
    - `SUPABASE_DB_URL="$RESTORE_DB_URL" pnpm db:verify-rls`
 5) **Smoke tests (API)**: point API at the restored DB (env override) and run:
    - `pnpm test:ci` (or a targeted subset)
-   - Stripe webhook idempotency sanity: `BASE_URL=<stage-api> STRIPE_WEBHOOK_SECRET=... pnpm stripe:webhook-test`
+   - PayU webhook idempotency sanity: `BASE_URL=<stage-api> PAYU_MERCHANT_KEY=... PAYU_MERCHANT_SALT=... pnpm payu:webhook-test`
 6) **Promote**: only after staging restore passes, promote/replace prod DB or re-point the API.
 
 ## Restore drill checklist (measure RTO)
@@ -51,7 +51,7 @@ pg_dump --schema-only --file=schema_$(date +%Y%m%d%H%M).sql "$PGURL"
 - [ ] Migrations applied (`pnpm db:migrate`).
 - [ ] RLS verified (`pnpm db:verify-rls`).
 - [ ] API smoke tests (minimal) passed.
-- [ ] Stripe webhook replay test passed.
+- [ ] PayU webhook replay test passed.
 - [ ] Record end time (T_end) and compute RTO = T_end - T0.
 - [ ] Log issues and fixes; update runbook as needed.
 
@@ -59,7 +59,7 @@ pg_dump --schema-only --file=schema_$(date +%Y%m%d%H%M).sql "$PGURL"
 - **Schema drift / checksum mismatch in migrations**: rerun with clean restore; reconcile drift before promote.
 - **Missing RLS/policies**: rerun migrations; verify with `pnpm db:verify-rls`.
 - **Partial restore / missing data**: confirm backup recency vs RPO; if gap exceeds RPO, consider PITR to closer timestamp.
-- **Webhook idempotency table missing**: re-run migrations; if data lost, expect Stripe to retry events—monitor for duplicates.
+- **Webhook idempotency table missing**: re-run migrations; if data lost, expect PayU retries/replays—monitor for duplicates.
 - **Secrets missing**: re-seed Cloudflare `wrangler secret` and CI/CD secrets; never commit values.
 
 ## Notes

@@ -1,7 +1,7 @@
 # MemoryNode Dashboard
 
 Minimal MVP with Supabase Auth (GitHub OAuth + magic link) and RLS-safe views for workspaces, API keys, memories, and usage.
-Worker API billing controls are wired to Stripe Checkout/Portal using your normal API key (stored locally).
+Worker API billing controls are wired to PayU checkout using your normal API key (stored locally).
 
 ## Run locally
 ```bash
@@ -37,12 +37,11 @@ Use the **anon** (not service-role) key so browser traffic is RLS-enforced.
 ## Billing
 - Uses Worker API endpoints:
   - `GET /v1/billing/status` (shows plan, plan_status, effective_plan, renewal/cancel flags)
-  - `POST /v1/billing/checkout` (opens Stripe Checkout)
-  - `POST /v1/billing/portal` (opens Stripe Billing Portal)
+  - `POST /v1/billing/checkout` (opens PayU checkout)
+  - `POST /v1/billing/portal` (returns `410 Gone`; legacy Stripe portal removed)
 - Buttons:
-  - **Upgrade to Pro** → opens Checkout session in a new tab.
-  - **Manage billing** → opens Portal (409 “Upgrade first” if no customer yet).
-- Query params `?status=success|canceled` render a small banner after returning from Stripe.
+  - **Upgrade to Pro (PayU)** → opens checkout in a new tab.
+- Query params `?status=success|canceled` render a small banner after returning from checkout.
 
 ## Commands
 - `pnpm dev --filter @memorynode/dashboard`

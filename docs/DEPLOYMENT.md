@@ -9,7 +9,7 @@ Use this runbook to deploy the Cloudflare Worker to staging, including DB migrat
 - `SUPABASE_DB_URL` (or `DATABASE_URL`) – staging Postgres
 - `BASE_URL` – staging API base (e.g., https://api-staging.memorynode.ai)
 - `MEMORYNODE_API_KEY` – staging API key for smoke
-- Optional billing smoke: `STRIPE_WEBHOOK_SECRET` (and Stripe staging keys in the platform)
+- Optional billing smoke: `PAYU_MERCHANT_KEY` + `PAYU_MERCHANT_SALT` (and PayU staging credentials in the platform)
 - Optional `BUILD_VERSION` is auto-set by the deploy script (ISO timestamp). You can override by setting it in the environment before running.
  - GitHub secrets (recommended names) for CI/manual smokes: `MEMORYNODE_API_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `API_KEY_SALT`.
 
@@ -25,7 +25,7 @@ pnpm deploy:staging
 1) Runs `pnpm release:gate:full` (code/config + db:migrate/verify + lint/typecheck/tests).  
 2) Deploys: `pnpm -C apps/api wrangler deploy --env staging`.  
 3) Post-deploy smoke: `GET /healthz` then `GET /v1/usage/today` with your API key.  
-4) If `STRIPE_WEBHOOK_SECRET` is set, runs `pnpm stripe:webhook-test` (staging webhook).
+4) If `PAYU_MERCHANT_KEY` + `PAYU_MERCHANT_SALT` are set, runs `pnpm payu:webhook-test` (staging webhook).
 
 If any step fails, the script exits non‑zero with a concise message (no secrets printed).
 
@@ -54,7 +54,7 @@ If any step fails, the script exits non‑zero with a concise message (no secret
 - `BASE_URL` – prod API base (e.g., https://api.memorynode.ai)
 - `MEMORYNODE_API_KEY` – prod API key for smoke
 - Cloudflare auth: `pnpm -C apps/api wrangler login` or `CLOUDFLARE_API_TOKEN`
-- Optional billing smoke: `STRIPE_WEBHOOK_SECRET` (and prod Stripe keys in platform)
+- Optional billing smoke: `PAYU_MERCHANT_KEY` + `PAYU_MERCHANT_SALT` (and prod PayU credentials in platform)
 - Optional `BUILD_VERSION` is auto-set by the deploy script (ISO timestamp). You can override by setting it in the environment before running.
 
 ## Command
@@ -70,7 +70,7 @@ pnpm deploy:prod
 1) `pnpm release:gate:full` (CHECK_ENV=production inside; includes db:check).  
 2) `pnpm -C apps/api wrangler deploy --env production`.  
 3) Smoke: `GET /healthz` and `GET /v1/usage/today` with API key.  
-4) If `STRIPE_WEBHOOK_SECRET` is set, runs `pnpm stripe:webhook-test` (prod webhook).
+4) If `PAYU_MERCHANT_KEY` + `PAYU_MERCHANT_SALT` are set, runs `pnpm payu:webhook-test` (prod webhook).
 
 If `DEPLOY_CONFIRM` is missing/wrong, it refuses to run before touching anything.
 
