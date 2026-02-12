@@ -833,30 +833,31 @@ function BillingView({ apiKey }: { apiKey: string }) {
     }
     setError(null);
     try {
-      const res = await apiPost<{ url: string }>("/v1/billing/checkout", {}, apiKey);
-      window.open(res.url, "_blank", "noopener");
+      const res = await apiPost<{
+        url: string;
+        method?: string;
+        fields?: Record<string, string>;
+      }>("/v1/billing/checkout", {}, apiKey);
+
+      if ((res.method ?? "GET").toUpperCase() === "POST" && res.fields && Object.keys(res.fields).length > 0) {
+        const target = window.open("", "_blank", "noopener");
+        if (!target) {
+          setError("Popup blocked by browser. Allow popups and try again.");
+          return;
+        }
+        const html = `<!doctype html><html><body><form id="payu-form" method="POST" action="${res.url}">
+${Object.entries(res.fields)
+    .map(([k, v]) => `<input type="hidden" name="${k}" value="${String(v).replace(/"/g, "&quot;")}" />`)
+    .join("\n")}
+</form><script>document.getElementById("payu-form").submit();</script></body></html>`;
+        target.document.write(html);
+        target.document.close();
+      } else {
+        window.open(res.url, "_blank", "noopener");
+      }
     } catch (err) {
       if (err instanceof ApiClientError) setError(err.message);
       else setError(err instanceof Error ? err.message : String(err));
-    }
-  };
-
-  const openPortal = async () => {
-    if (!isApiKeyValid(apiKey)) {
-      setError("API key required");
-      return;
-    }
-    setError(null);
-    try {
-      const res = await apiPost<{ url: string }>("/v1/billing/portal", {}, apiKey);
-      window.open(res.url, "_blank", "noopener");
-    } catch (err) {
-      if (err instanceof ApiClientError) {
-        if (err.code === "BILLING_NOT_SETUP") setError("Upgrade first, then manage billing");
-        else setError(err.message);
-      } else {
-        setError(err instanceof Error ? err.message : String(err));
-      }
     }
   };
 
@@ -889,10 +890,7 @@ function BillingView({ apiKey }: { apiKey: string }) {
       </div>
       <div className="row">
         <button onClick={openCheckout} disabled={loading}>
-          Upgrade to Pro
-        </button>
-        <button className="ghost" onClick={openPortal} disabled={loading}>
-          Manage billing
+          Upgrade to Pro (PayU)
         </button>
         <button className="ghost" onClick={load} disabled={loading}>
           Refresh

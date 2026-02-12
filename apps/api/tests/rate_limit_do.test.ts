@@ -13,8 +13,9 @@ const envBase = {
   OPENAI_API_KEY: "",
   API_KEY_SALT: "",
   MASTER_ADMIN_TOKEN: "",
-  STRIPE_SECRET_KEY: "sk_test",
-  STRIPE_PRICE_PRO: "price_123",
+  PAYU_MERCHANT_KEY: "payu_key",
+  PAYU_MERCHANT_SALT: "payu_salt",
+  PAYU_BASE_URL: "https://secure.payu.in/_payment",
   PUBLIC_APP_URL: "https://app.example.com",
 } as const;
 

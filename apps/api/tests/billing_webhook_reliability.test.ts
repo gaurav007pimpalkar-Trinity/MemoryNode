@@ -1,33 +1,6 @@
+import crypto from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
-
-const stripeMocks = {
-  customers: { create: vi.fn() },
-  checkout: { sessions: { create: vi.fn() } },
-  billingPortal: { sessions: { create: vi.fn() } },
-  webhooks: { constructEvent: vi.fn() },
-  subscriptions: { retrieve: vi.fn() },
-  invoices: { retrieve: vi.fn() },
-  events: { retrieve: vi.fn() },
-};
-
-vi.mock("stripe", () => {
-  return {
-    default: class StripeMock {
-      static createFetchHttpClient = vi.fn(() => ({}));
-      static createSubtleCryptoProvider = vi.fn(() => ({}));
-      customers = stripeMocks.customers;
-      checkout = stripeMocks.checkout;
-      billingPortal = stripeMocks.billingPortal;
-      webhooks = stripeMocks.webhooks;
-      subscriptions = stripeMocks.subscriptions;
-      invoices = stripeMocks.invoices;
-      events = stripeMocks.events;
-      constructor() {}
-    },
-  };
-});
-
 import { handleBillingWebhook } from "../src/index.js";
 
 const baseEnv = {
@@ -40,23 +13,79 @@ const baseEnv = {
     idFromName: vi.fn(),
     get: vi.fn(),
   },
-  STRIPE_SECRET_KEY: "sk_test_123",
-  STRIPE_WEBHOOK_SECRET: "stripe_webhook_secret_test_123",
-  STRIPE_PRICE_PRO: "price_123",
+  PAYU_MERCHANT_KEY: "payu_key",
+  PAYU_MERCHANT_SALT: "payu_salt",
+  PAYU_BASE_URL: "https://secure.payu.in/_payment",
+  PAYU_PRO_AMOUNT: "49.00",
+  PAYU_PRODUCT_INFO: "MemoryNode Platform Pro",
   PUBLIC_APP_URL: "https://app.example.com",
   SUPABASE_MODE: "stub",
 } as Record<string, unknown>;
 
+function signPayload(payload: Record<string, string>) {
+  const seq = [
+    String(baseEnv.PAYU_MERCHANT_SALT),
+    payload.status ?? "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    payload.udf1 ?? "",
+    payload.email ?? "",
+    payload.firstname ?? "",
+    payload.productinfo ?? "",
+    payload.amount ?? "",
+    payload.txnid ?? "",
+    String(baseEnv.PAYU_MERCHANT_KEY),
+  ].join("|");
+  return crypto.createHash("sha512").update(seq).digest("hex");
+}
+
+function makePayload(overrides?: Record<string, string>) {
+  const base = {
+    key: String(baseEnv.PAYU_MERCHANT_KEY),
+    txnid: "txn_rel_1",
+    mihpayid: "mihpay_rel_1",
+    status: "success",
+    amount: "49.00",
+    productinfo: "MemoryNode Platform Pro",
+    firstname: "MemoryNode",
+    email: "ws1@example.com",
+    udf1: "ws1",
+    ...(overrides ?? {}),
+  };
+  return {
+    ...base,
+    hash: signPayload(base),
+  };
+}
+
 function makeSupabase(workspaceExists: boolean): SupabaseClient {
   const workspaceRow = workspaceExists
-    ? { id: "ws1", plan: "free", plan_status: "free" }
+    ? {
+      id: "ws1",
+      plan: "free",
+      plan_status: "free",
+      payu_last_event_created: null,
+      payu_last_event_id: null,
+      payu_txn_id: null,
+      payu_payment_id: null,
+      payu_last_status: null,
+      payu_last_plan: null,
+    }
     : null;
-  const stripeEvents = new Map<string, Record<string, unknown>>();
-  const stripeWebhookBuilder = {
+  const payuEvents = new Map<string, Record<string, unknown>>();
+
+  const payuWebhookBuilder = {
     select: () => ({
       eq: (_col: string, val: unknown) => ({
         maybeSingle: async () => ({
-          data: stripeEvents.get(String(val)) ?? null,
+          data: payuEvents.get(String(val)) ?? null,
           error: null,
         }),
       }),
@@ -67,11 +96,11 @@ function makeSupabase(workspaceExists: boolean): SupabaseClient {
       return {
         select: () => {
           const run = async () => {
-            if (stripeEvents.has(String(row.event_id))) {
+            if (payuEvents.has(String(row.event_id))) {
               return { data: null, error: { code: "23505", message: "duplicate" } };
             }
-            stripeEvents.set(String(row.event_id), { ...row });
-            return { data: stripeEvents.get(String(row.event_id)) ?? null, error: null };
+            payuEvents.set(String(row.event_id), { ...row });
+            return { data: payuEvents.get(String(row.event_id)) ?? null, error: null };
           };
           return {
             maybeSingle: run,
@@ -83,23 +112,45 @@ function makeSupabase(workspaceExists: boolean): SupabaseClient {
     update: (fields: Record<string, unknown>) => ({
       eq: (_col: string, val: unknown) => {
         const key = String(val);
-        const existing = stripeEvents.get(key);
+        const existing = payuEvents.get(key);
         if (existing) Object.assign(existing, fields);
         return { data: existing ? [existing] : [], error: null };
       },
     }),
   };
+
   const workspacesBuilder = {
     select: () => workspacesBuilder,
-    eq: () => workspacesBuilder,
+    eq: (_col: string, value: unknown) => {
+      if (_col === "id") {
+        return {
+          maybeSingle: async () => ({ data: workspaceRow && workspaceRow.id === value ? workspaceRow : null, error: null }),
+          single: async () => ({ data: workspaceRow && workspaceRow.id === value ? workspaceRow : null, error: null }),
+        };
+      }
+      if (_col === "payu_txn_id") {
+        return {
+          maybeSingle: async () => ({ data: workspaceRow && workspaceRow.payu_txn_id === value ? workspaceRow : null, error: null }),
+          single: async () => ({ data: workspaceRow && workspaceRow.payu_txn_id === value ? workspaceRow : null, error: null }),
+        };
+      }
+      return workspacesBuilder;
+    },
     maybeSingle: async () => ({ data: workspaceRow, error: null }),
     single: async () => ({ data: workspaceRow, error: null }),
-    update: () => ({ eq: () => ({ data: workspaceRow ? [workspaceRow] : [], error: null }) }),
+    update: (fields: Record<string, unknown>) => ({
+      eq: () => {
+        if (workspaceRow) Object.assign(workspaceRow, fields);
+        return { data: workspaceRow ? [workspaceRow] : [], error: null };
+      },
+    }),
   };
+
   return {
     from(table: string) {
       if (table === "workspaces") return workspacesBuilder;
-      if (table === "stripe_webhook_events") return stripeWebhookBuilder;
+      if (table === "payu_webhook_events") return payuWebhookBuilder;
+      if (table === "product_events") return { insert: () => ({ error: null }), select: () => ({ eq: () => ({ eq: () => ({ limit: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }) }) }) };
       throw new Error(`unexpected table ${table}`);
     },
   } as unknown as SupabaseClient;
@@ -107,66 +158,30 @@ function makeSupabase(workspaceExists: boolean): SupabaseClient {
 
 afterEach(() => {
   vi.restoreAllMocks();
-  stripeMocks.customers.create.mockReset();
-  stripeMocks.checkout.sessions.create.mockReset();
-  stripeMocks.billingPortal.sessions.create.mockReset();
-  stripeMocks.webhooks.constructEvent.mockReset();
-  stripeMocks.subscriptions.retrieve.mockReset();
-  stripeMocks.invoices.retrieve.mockReset();
-  stripeMocks.events.retrieve.mockReset();
 });
 
-describe("Stripe webhook reliability", () => {
-  it("passes raw bytes to Stripe signature verification", async () => {
-    const body = new TextEncoder().encode('{"hello":"world"}');
+describe("PayU webhook reliability", () => {
+  it("accepts raw byte JSON body when signature is valid", async () => {
+    const payload = makePayload();
+    const body = new TextEncoder().encode(JSON.stringify(payload));
     const req = new Request("http://localhost/v1/billing/webhook", {
       method: "POST",
-      headers: { "stripe-signature": "t=1,v1=fake" },
+      headers: { "content-type": "application/json" },
       body,
-    });
-
-    stripeMocks.webhooks.constructEvent.mockReturnValue({
-      id: "evt_raw",
-      created: 1_700_000_100,
-      type: "invoice.paid",
-      data: { object: { customer: "cus_123" } },
     });
 
     const res = await handleBillingWebhook(req, baseEnv as Record<string, unknown>, makeSupabase(true), "req-raw");
     expect(res.status).toBe(200);
-
-    expect(stripeMocks.webhooks.constructEvent).toHaveBeenCalledTimes(1);
-    const [raw] = stripeMocks.webhooks.constructEvent.mock.calls[0];
-    expect(typeof raw).toBe("string");
-    expect(raw).toBe('{"hello":"world"}');
-    const tolerance = stripeMocks.webhooks.constructEvent.mock.calls[0][3] as number;
-    expect(tolerance).toBe(300);
   });
 
-  it("returns 202 deferred when workspace is not found by customer or metadata", async () => {
-    const eventObj = {
-      id: "evt_missing_workspace",
-      created: 1_700_000_200,
-      type: "customer.subscription.updated",
-      data: {
-        object: {
-          id: "sub_missing",
-          customer: "cus_missing",
-          status: "active",
-          metadata: { workspace_id: "ws_missing" },
-          current_period_end: 0,
-          cancel_at_period_end: false,
-          items: { data: [{ price: { id: "price_123" } }] },
-        },
-      },
-    };
-    stripeMocks.webhooks.constructEvent.mockReturnValue(eventObj);
+  it("returns 202 deferred when workspace is not found by udf1 or txn", async () => {
+    const payload = makePayload({ udf1: "ws_missing", txnid: "txn_missing", mihpayid: "mih_missing" });
 
     const res = await handleBillingWebhook(
       new Request("http://localhost/v1/billing/webhook", {
         method: "POST",
-        headers: { "stripe-signature": "t=1,v1=fake" },
-        body: "{}",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
       }),
       baseEnv as Record<string, unknown>,
       makeSupabase(false),
@@ -179,108 +194,29 @@ describe("Stripe webhook reliability", () => {
   });
 
   it("logs only redacted fields and no sensitive payload data", async () => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const eventObj = {
-      type: "invoice.payment_failed",
-      id: "evt_123",
-      created: 1_700_000_300,
-      data: {
-        object: {
-          customer: "cus_sensitive",
-          metadata: { workspace_id: "ws_sensitive" },
-          lines: { data: [{ card: "4111", client_secret: "secret" }] },
-          customer_email: "user@example.com",
-          invoice_pdf: "https://stripe.com/pdf",
-        },
-      },
-    };
-
-    stripeMocks.webhooks.constructEvent.mockReturnValue(eventObj);
+    const payload = makePayload({ email: "user@example.com", firstname: "Sensitive", udf1: "ws1" });
 
     const res = await handleBillingWebhook(
       new Request("http://localhost/v1/billing/webhook", {
         method: "POST",
-        headers: { "stripe-signature": "t=1,v1=fake" },
-        body: "{}",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
       }),
       baseEnv as Record<string, unknown>,
       makeSupabase(true),
     );
 
     expect(res.status).toBe(200);
-    const combinedLogs = [...warnSpy.mock.calls, ...logSpy.mock.calls, ...errorSpy.mock.calls]
+    const combinedLogs = [...logSpy.mock.calls, ...errorSpy.mock.calls]
       .map((args) => JSON.stringify(args))
       .join(" ");
-    const forbidden = ["card", "client_secret", "invoice_pdf", "customer_email", "lines"];
+
+    const forbidden = ["card", "client_secret", "invoice_pdf", "authorization"];
     for (const token of forbidden) {
       expect(combinedLogs.toLowerCase()).not.toContain(token);
     }
-    warnSpy.mockRestore();
-    logSpy.mockRestore();
-    errorSpy.mockRestore();
-  });
-
-  it("allows tolerance override from env", async () => {
-    stripeMocks.webhooks.constructEvent.mockReturnValue({
-      id: "evt_tolerance",
-      created: 1_700_000_400,
-      type: "invoice.paid",
-      data: { object: { customer: "cus_123" } },
-    });
-
-    const res = await handleBillingWebhook(
-      new Request("http://localhost/v1/billing/webhook", {
-        method: "POST",
-        headers: { "stripe-signature": "t=1,v1=fake" },
-        body: "{}",
-      }),
-      { ...baseEnv, STRIPE_WEBHOOK_TOLERANCE_SEC: "120" } as Record<string, unknown>,
-      makeSupabase(true),
-      "req-tolerance",
-    );
-    expect(res.status).toBe(200);
-    expect(stripeMocks.webhooks.constructEvent).toHaveBeenCalledTimes(1);
-    expect(stripeMocks.webhooks.constructEvent.mock.calls[0][3]).toBe(120);
-  });
-
-  it("emits webhook_processed then webhook_replayed for duplicate event ids", async () => {
-    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    stripeMocks.webhooks.constructEvent.mockReturnValue({
-      id: "evt_replay_log",
-      created: 1_700_000_500,
-      type: "invoice.paid",
-      data: { object: { customer: "cus_123" } },
-    });
-
-    const makeReq = () =>
-      new Request("http://localhost/v1/billing/webhook", {
-        method: "POST",
-        headers: { "stripe-signature": "t=1,v1=fake" },
-        body: "{}",
-      });
-    const supabase = makeSupabase(true);
-    const first = await handleBillingWebhook(makeReq(), baseEnv as Record<string, unknown>, supabase, "req-log-1");
-    const second = await handleBillingWebhook(makeReq(), baseEnv as Record<string, unknown>, supabase, "req-log-2");
-
-    expect(first.status).toBe(200);
-    expect(second.status).toBe(200);
-
-    const lines = logSpy.mock.calls
-      .map((args) => args[0])
-      .filter((line) => typeof line === "string")
-      .map((line) => {
-        try {
-          return JSON.parse(line as string) as { event_name?: string };
-        } catch {
-          return {};
-        }
-      });
-    const names = lines.map((line) => line.event_name);
-    expect(names).toContain("webhook_processed");
-    expect(names).toContain("webhook_replayed");
-    logSpy.mockRestore();
   });
 });

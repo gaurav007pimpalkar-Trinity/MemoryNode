@@ -1,5 +1,4 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import Stripe from "stripe";
 import JSZip from "jszip";
 import {
   DEFAULT_TOPK,
@@ -34,17 +33,17 @@ interface Env {
   AUDIT_IP_SALT?: string;
   MAX_IMPORT_BYTES?: string;
   MAX_EXPORT_BYTES?: string;
-  STRIPE_SECRET_KEY?: string;
-  STRIPE_WEBHOOK_SECRET?: string;
-  STRIPE_WEBHOOK_TOLERANCE_SEC?: string;
+  PAYU_MERCHANT_KEY?: string;
+  PAYU_MERCHANT_SALT?: string;
+  PAYU_WEBHOOK_SECRET?: string;
   BILLING_RECONCILE_ON_AMBIGUITY?: string;
   BILLING_WEBHOOKS_ENABLED?: string;
-  STRIPE_PRICE_PRO?: string;
-  STRIPE_PRICE_TEAM?: string;
+  PAYU_BASE_URL?: string;
+  PAYU_PRO_AMOUNT?: string;
+  PAYU_PRODUCT_INFO?: string;
   PUBLIC_APP_URL?: string;
-  STRIPE_PORTAL_CONFIGURATION_ID?: string;
-  STRIPE_SUCCESS_PATH?: string;
-  STRIPE_CANCEL_PATH?: string;
+  PAYU_SUCCESS_PATH?: string;
+  PAYU_CANCEL_PATH?: string;
 }
 
 interface ApiError {
@@ -75,6 +74,22 @@ interface SearchFilters {
   start_time?: string;
   end_time?: string;
 }
+
+type PayUWebhookPayload = {
+  key?: string;
+  txnid?: string;
+  mihpayid?: string;
+  status?: string;
+  hash?: string;
+  amount?: string;
+  productinfo?: string;
+  firstname?: string;
+  email?: string;
+  udf1?: string;
+  udf2?: string;
+  addedon?: string;
+  [key: string]: unknown;
+};
 
 function parseApiKeyMeta(raw: string): { prefix: string; last4: string } {
   const parts = raw.split("_");
@@ -139,7 +154,8 @@ const RRF_K = 60;
 const ALLOWED_PLAN_STATUS = new Set(["free", "trialing", "active", "past_due", "canceled"]);
 const DEFAULT_SUCCESS_PATH = "/settings/billing?status=success";
 const DEFAULT_CANCEL_PATH = "/settings/billing?status=canceled";
-const DEFAULT_STRIPE_WEBHOOK_TOLERANCE_SEC = 300;
+const DEFAULT_PAYU_PRO_AMOUNT = "49.00";
+const DEFAULT_PAYU_PRODUCT_INFO = "MemoryNode Platform Pro";
 const DEFAULT_WEBHOOK_REPROCESS_LIMIT = 50;
 let requestCorsHeaders: Record<string, string> = {};
 let securityHeaders: Record<string, string> = {};
@@ -220,55 +236,161 @@ function normalizePlanStatus(status: unknown): AuthContext["planStatus"] {
   return "free";
 }
 
-function assertStripeEnvFor(path: string, env: Env, plan?: "pro" | "team"): void {
+function assertPayUEnvFor(path: string, env: Env): void {
   const missing: string[] = [];
-  if (!env.STRIPE_SECRET_KEY) missing.push("STRIPE_SECRET_KEY");
+  if (!env.PAYU_MERCHANT_KEY) missing.push("PAYU_MERCHANT_KEY");
+  if (!env.PAYU_MERCHANT_SALT) missing.push("PAYU_MERCHANT_SALT");
+  if (!env.PAYU_BASE_URL) missing.push("PAYU_BASE_URL");
   if (!env.PUBLIC_APP_URL) missing.push("PUBLIC_APP_URL");
-  if (path === "/v1/billing/checkout") {
-    if (plan === "team") {
-      if (!env.STRIPE_PRICE_TEAM) missing.push("STRIPE_PRICE_TEAM");
-    } else if (!env.STRIPE_PRICE_PRO) {
-      missing.push("STRIPE_PRICE_PRO");
+  if (missing.length) {
+    throw createHttpError(500, "CONFIG_ERROR", `Missing PayU configuration: ${missing.join(", ")}`);
+  }
+}
+
+function isPayUBillingConfigured(env: Env): boolean {
+  return Boolean(env.PAYU_MERCHANT_KEY && env.PAYU_MERCHANT_SALT && env.PAYU_BASE_URL && env.PUBLIC_APP_URL);
+}
+
+function normalizePayUStatus(status: string | null | undefined): "success" | "pending" | "failure" | "canceled" {
+  const normalized = (status ?? "").trim().toLowerCase();
+  if (normalized === "success") return "success";
+  if (normalized === "pending") return "pending";
+  if (normalized === "cancel" || normalized === "cancelled" || normalized === "canceled") return "canceled";
+  return "failure";
+}
+
+function planFromPayUStatus(status: "success" | "pending" | "failure" | "canceled"): AuthContext["plan"] {
+  if (status === "success") return "pro";
+  return "free";
+}
+
+function planStatusFromPayUStatus(status: "success" | "pending" | "failure" | "canceled"): AuthContext["planStatus"] {
+  if (status === "success") return "active";
+  if (status === "pending") return "past_due";
+  if (status === "canceled") return "canceled";
+  return "past_due";
+}
+
+function normalizeMoneyString(raw: string | undefined): string {
+  const parsed = Number(raw ?? DEFAULT_PAYU_PRO_AMOUNT);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_PAYU_PRO_AMOUNT;
+  return parsed.toFixed(2);
+}
+
+function paymentPeriodEndFromStatus(status: "success" | "pending" | "failure" | "canceled"): string | null {
+  if (status !== "success") return null;
+  const next = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+  return next.toISOString();
+}
+
+function normalizePayUBaseUrl(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) throw createHttpError(500, "CONFIG_ERROR", "PAYU_BASE_URL not set");
+  const parsed = new URL(trimmed);
+  if (!parsed.pathname || parsed.pathname === "/") {
+    parsed.pathname = "/_payment";
+  }
+  return parsed.toString();
+}
+
+function normalizePayUHash(input: unknown): string {
+  return String(input ?? "").trim().toLowerCase();
+}
+
+function asNonEmptyString(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function parsePayUEventCreated(raw: unknown): number {
+  const direct = Number(raw);
+  if (Number.isFinite(direct) && direct > 0) return Math.floor(direct);
+  if (typeof raw === "string" && raw.trim().length > 0) {
+    const ts = Date.parse(raw);
+    if (Number.isFinite(ts) && ts > 0) return Math.floor(ts / 1000);
+  }
+  return Math.floor(Date.now() / 1000);
+}
+
+function payUHashReverseSequence(payload: PayUWebhookPayload, env: Env): string {
+  return [
+    env.PAYU_MERCHANT_SALT!,
+    payload.status ?? "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    payload.udf1 ?? "",
+    payload.email ?? "",
+    payload.firstname ?? "",
+    payload.productinfo ?? "",
+    payload.amount ?? "",
+    payload.txnid ?? "",
+    env.PAYU_MERCHANT_KEY!,
+  ].join("|");
+}
+
+async function computeSha512Hex(input: string): Promise<string> {
+  const data = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest("SHA-512", data);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function parseWebhookPayload(raw: string, contentType: string): PayUWebhookPayload {
+  if (contentType.includes("application/json")) {
+    try {
+      const parsed = JSON.parse(raw);
+      return (parsed ?? {}) as PayUWebhookPayload;
+    } catch {
+      throw createHttpError(400, "BAD_REQUEST", "Webhook body must be valid JSON");
     }
   }
-  if (path === "/v1/billing/webhook" && !env.STRIPE_WEBHOOK_SECRET) missing.push("STRIPE_WEBHOOK_SECRET");
-  if (missing.length) {
-    throw createHttpError(500, "CONFIG_ERROR", `Missing Stripe configuration: ${missing.join(", ")}`);
+  const params = new URLSearchParams(raw);
+  const payload: Record<string, string> = {};
+  for (const [k, v] of params.entries()) {
+    payload[k] = v;
   }
+  return payload as PayUWebhookPayload;
 }
 
-function getStripeClient(env: Env): Stripe {
-  if (!env.STRIPE_SECRET_KEY) {
-    throw createHttpError(500, "CONFIG_ERROR", "STRIPE_SECRET_KEY not set");
-  }
-  return new Stripe(env.STRIPE_SECRET_KEY, {
-    apiVersion: "2024-06-20",
-    httpClient: Stripe.createFetchHttpClient(),
-  });
-}
+async function isPayUWebhookSignatureValid(
+  payload: PayUWebhookPayload,
+  rawBody: string,
+  request: Request,
+  env: Env,
+): Promise<boolean> {
+  const received = normalizePayUHash(payload.hash);
+  if (!received) return false;
 
-function normalizeStripeStatus(status: string | null | undefined): AuthContext["planStatus"] {
-  switch (status) {
-    case "active":
-      return "active";
-    case "trialing":
-      return "trialing";
-    case "past_due":
-    case "unpaid":
-      return "past_due";
-    case "canceled":
-    case "cancelling":
-    case "incomplete_expired":
-    case "incomplete":
-      return "canceled";
-    default:
-      return "past_due";
-  }
-}
+  const merchantKey = asNonEmptyString(payload.key);
+  if (merchantKey && merchantKey !== env.PAYU_MERCHANT_KEY) return false;
 
-function planFromPriceId(priceId: string | undefined | null, env: Env): AuthContext["plan"] {
-  if (priceId && env.STRIPE_PRICE_TEAM && priceId === env.STRIPE_PRICE_TEAM) return "team";
-  return "pro";
+  const reverse = payUHashReverseSequence(payload, env);
+  const expected = normalizePayUHash(await computeSha512Hex(reverse));
+  if (expected === received) return true;
+
+  const additionalCharges = asNonEmptyString((payload as { additionalCharges?: unknown }).additionalCharges);
+  if (additionalCharges) {
+    const expectedWithCharges = normalizePayUHash(await computeSha512Hex(`${additionalCharges}|${reverse}`));
+    if (expectedWithCharges === received) return true;
+  }
+
+  const webhookSecret = asNonEmptyString(env.PAYU_WEBHOOK_SECRET);
+  const signatureHeader = asNonEmptyString(request.headers.get("x-payu-signature"));
+  if (webhookSecret && signatureHeader) {
+    const fallback = normalizePayUHash(await computeSha512Hex(`${rawBody}|${webhookSecret}`));
+    return fallback === normalizePayUHash(signatureHeader);
+  }
+
+  return false;
 }
 
 function buildUpgradeUrl(env: Env): string {
@@ -756,7 +878,7 @@ let stubState: {
     api_audit_log: StubRow[];
     app_settings: StubRow[];
     product_events: StubRow[];
-    stripe_webhook_events: StubRow[];
+    payu_webhook_events: StubRow[];
   };
   rawApiKeys: Map<string, { workspaceId: string }>;
 } | null = null;
@@ -773,7 +895,7 @@ function createStubSupabase(env: Env) {
         api_audit_log: [] as StubRow[],
         app_settings: [{ api_key_salt: env.API_KEY_SALT ?? "" }],
         product_events: [] as StubRow[],
-        stripe_webhook_events: [] as StubRow[],
+        payu_webhook_events: [] as StubRow[],
       },
       rawApiKeys: new Map<string, { workspaceId: string }>(),
     };
@@ -2765,8 +2887,8 @@ async function handleReprocessDeferredWebhooks(
   });
 
   const pending = await supabase
-    .from("stripe_webhook_events")
-    .select("event_id,event_type,event_created")
+    .from("payu_webhook_events")
+    .select("event_id,payload,event_created")
     .eq("status", statusFilterRaw)
     .order("event_created", { ascending: true })
     .limit(limit);
@@ -2778,14 +2900,13 @@ async function handleReprocessDeferredWebhooks(
     );
   }
 
-  const rows = ((pending.data as Array<{ event_id?: unknown }> | null) ?? [])
+  const rows = ((pending.data as Array<{ event_id?: unknown; payload?: unknown }> | null) ?? [])
     .filter((row) => typeof row.event_id === "string" && row.event_id.trim().length > 0) as Array<{
     event_id: string;
-    event_type?: string | null;
+    payload?: unknown;
     event_created?: number | null;
   }>;
 
-  const stripe = getStripeClient(env);
   let processed = 0;
   let replayed = 0;
   let deferred = 0;
@@ -2793,15 +2914,21 @@ async function handleReprocessDeferredWebhooks(
 
   for (const row of rows) {
     try {
-      const event = (await stripe.events.retrieve(row.event_id)) as unknown as Stripe.Event;
-      const outcome = await reconcileStripeEvent(event, supabase, env, `${requestId || "admin-reprocess"}:${row.event_id}`);
+      const payload = (row.payload ?? {}) as PayUWebhookPayload;
+      const outcome = await reconcilePayUWebhook(
+        payload,
+        supabase,
+        env,
+        `${requestId || "admin-reprocess"}:${row.event_id}`,
+        row.event_id,
+      );
       if (outcome.outcome === "replayed") {
         replayed += 1;
         emitEventLog("webhook_reprocess_skipped", {
           route: "/admin/webhooks/reprocess",
           method: "POST",
           request_id: requestId || null,
-          stripe_event_id: row.event_id,
+          payu_event_id: row.event_id,
           replay_status: outcome.replayStatus ?? null,
         });
         continue;
@@ -2812,7 +2939,7 @@ async function handleReprocessDeferredWebhooks(
           route: "/admin/webhooks/reprocess",
           method: "POST",
           request_id: requestId || null,
-          stripe_event_id: row.event_id,
+          payu_event_id: row.event_id,
           reason: outcome.deferReason ?? "workspace_not_found",
         });
         continue;
@@ -2822,7 +2949,7 @@ async function handleReprocessDeferredWebhooks(
         route: "/admin/webhooks/reprocess",
         method: "POST",
         request_id: requestId || null,
-        stripe_event_id: row.event_id,
+        payu_event_id: row.event_id,
         outcome: outcome.outcome,
       });
     } catch (err) {
@@ -2831,7 +2958,7 @@ async function handleReprocessDeferredWebhooks(
         route: "/admin/webhooks/reprocess",
         method: "POST",
         request_id: requestId || null,
-        stripe_event_id: row.event_id,
+        payu_event_id: row.event_id,
         error_message: redact((err as Error)?.message, "message"),
       });
     }
@@ -2983,9 +3110,9 @@ async function handleBillingStatus(
   auditCtx: { workspaceId?: string; apiKeyId?: string },
   requestId = "",
 ): Promise<Response> {
-  if (!env.STRIPE_SECRET_KEY) {
+  if (!isPayUBillingConfigured(env)) {
     return jsonResponse(
-      { error: { code: "BILLING_NOT_CONFIGURED", message: "Missing Stripe configuration" } },
+      { error: { code: "BILLING_NOT_CONFIGURED", message: "Missing PayU configuration" } },
       503,
     );
   }
@@ -3043,9 +3170,21 @@ async function handleBillingCheckout(
   auditCtx: { workspaceId?: string; apiKeyId?: string },
   requestId = "",
 ): Promise<Response> {
-  const parsedPlan = await safeParseJson<{ plan?: AuthContext["plan"] }>(request);
-  const requestedPlan = parsedPlan.ok && parsedPlan.data.plan === "team" ? "team" : "pro";
-  assertStripeEnvFor("/v1/billing/checkout", env, requestedPlan);
+  const parsedBody = await safeParseJson<{ plan?: AuthContext["plan"]; firstname?: string; email?: string; phone?: string }>(request);
+  const requestedPlan = parsedBody.ok ? parsedBody.data.plan : undefined;
+  if (requestedPlan && requestedPlan !== "pro" && requestedPlan !== "free") {
+    return jsonResponse(
+      {
+        error: {
+          code: "PLAN_NOT_SUPPORTED",
+          message: "Platform-only billing is enabled; seat/team pricing is not available.",
+        },
+      },
+      400,
+    );
+  }
+  assertPayUEnvFor("/v1/billing/checkout", env);
+
   const auth = await authenticate(request, env, supabase, auditCtx);
   const rate = await rateLimit(auth.keyHash, env);
   if (!rate.allowed) {
@@ -3058,7 +3197,7 @@ async function handleBillingCheckout(
 
   const { data, error } = await supabase
     .from("workspaces")
-    .select("id, stripe_customer_id")
+    .select("id")
     .eq("id", auth.workspaceId)
     .single();
 
@@ -3070,49 +3209,78 @@ async function handleBillingCheckout(
     );
   }
 
-  const stripe = getStripeClient(env);
-  let customerId = (data as { stripe_customer_id?: string | null }).stripe_customer_id ?? null;
-  if (!customerId) {
-    const customer = await stripe.customers.create({
-      metadata: { workspace_id: auth.workspaceId },
+  const monthKey = new Date().toISOString().slice(0, 7).replace("-", "");
+  const clientIdem = request.headers.get("Idempotency-Key") ?? request.headers.get("idempotency-key");
+  const workspaceHash = await shortHash(auth.workspaceId, 8);
+  const idemHash = clientIdem ? await shortHash(clientIdem, 8) : "default1";
+  const txnId = `mn${monthKey}${workspaceHash}${idemHash}`.slice(0, 40);
+
+  const updated = await supabase
+    .from("workspaces")
+    .update({
+      billing_provider: "payu",
+      payu_txn_id: txnId,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", auth.workspaceId);
+  if (updated.error) {
+    emitEventLog("billing_endpoint_error", {
+      route: "/v1/billing/checkout",
+      method: "POST",
+      status: 500,
+      request_id: requestId,
+      workspace_id_redacted: redact(auth.workspaceId, "workspace_id"),
     });
-    customerId = customer.id;
-    const updated = await supabase
-      .from("workspaces")
-      .update({ stripe_customer_id: customerId, updated_at: new Date().toISOString() })
-      .eq("id", auth.workspaceId);
-    if (updated.error) {
-      emitEventLog("billing_endpoint_error", {
-        route: "/v1/billing/checkout",
-        method: "POST",
-        status: 500,
-        request_id: requestId,
-        workspace_id_redacted: redact(auth.workspaceId, "workspace_id"),
-      });
-      return jsonResponse(
-        { error: { code: "DB_ERROR", message: updated.error.message ?? "Failed to persist customer id" } },
-        500,
-        rate.headers,
-      );
-    }
+    return jsonResponse(
+      { error: { code: "DB_ERROR", message: updated.error.message ?? "Failed to persist PayU transaction id" } },
+      500,
+      rate.headers,
+    );
   }
 
-  const successUrl = new URL(env.STRIPE_SUCCESS_PATH ?? DEFAULT_SUCCESS_PATH, env.PUBLIC_APP_URL!).toString();
-  const cancelUrl = new URL(env.STRIPE_CANCEL_PATH ?? DEFAULT_CANCEL_PATH, env.PUBLIC_APP_URL!).toString();
-  const monthKey = new Date().toISOString().slice(0, 7);
-  const clientIdem = request.headers.get("Idempotency-Key") ?? request.headers.get("idempotency-key");
-  const suffix = clientIdem ? await shortHash(clientIdem) : "default";
-  const idempotencyKey = `mn_checkout:${auth.workspaceId}:${monthKey}:${suffix}`;
-  const priceId = requestedPlan === "team" ? env.STRIPE_PRICE_TEAM! : env.STRIPE_PRICE_PRO!;
-  const session = await stripe.checkout.sessions.create({
-    mode: "subscription",
-    line_items: [{ price: priceId, quantity: 1 }],
-    customer: customerId,
-    success_url: successUrl,
-    cancel_url: cancelUrl,
-    client_reference_id: auth.workspaceId,
-    subscription_data: { metadata: { workspace_id: auth.workspaceId, requested_plan: requestedPlan } },
-  }, { idempotencyKey });
+  const successUrl = new URL(env.PAYU_SUCCESS_PATH ?? DEFAULT_SUCCESS_PATH, env.PUBLIC_APP_URL!).toString();
+  const cancelUrl = new URL(env.PAYU_CANCEL_PATH ?? DEFAULT_CANCEL_PATH, env.PUBLIC_APP_URL!).toString();
+  const amount = normalizeMoneyString(env.PAYU_PRO_AMOUNT);
+  const productInfo = (env.PAYU_PRODUCT_INFO ?? DEFAULT_PAYU_PRODUCT_INFO).trim();
+  const firstname = (parsedBody.ok ? parsedBody.data.firstname : undefined)?.trim() || "MemoryNode";
+  const email = (parsedBody.ok ? parsedBody.data.email : undefined)?.trim() || `${auth.workspaceId}@payu.local`;
+  const phone = (parsedBody.ok ? parsedBody.data.phone : undefined)?.trim() || "";
+
+  const hashInput = [
+    env.PAYU_MERCHANT_KEY!,
+    txnId,
+    amount,
+    productInfo,
+    firstname,
+    email,
+    auth.workspaceId,
+    "pro",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    env.PAYU_MERCHANT_SALT!,
+  ].join("|");
+  const hash = await computeSha512Hex(hashInput);
+
+  const checkoutFields = {
+    key: env.PAYU_MERCHANT_KEY!,
+    txnid: txnId,
+    amount,
+    productinfo: productInfo,
+    firstname,
+    email,
+    phone,
+    surl: successUrl,
+    furl: cancelUrl,
+    hash,
+    udf1: auth.workspaceId,
+    udf2: "pro",
+  };
 
   void emitProductEvent(
     supabase,
@@ -3126,10 +3294,19 @@ async function handleBillingCheckout(
       effectivePlan: effectivePlan(auth.plan, auth.planStatus),
       planStatus: auth.planStatus,
     },
-    { customer_id: redact(customerId, "stripe_customer_id") },
+    { txn_id: redact(txnId, "payu_txn_id"), provider: "payu" },
   );
 
-  return jsonResponse({ url: session.url }, 200, rate.headers);
+  return jsonResponse(
+    {
+      provider: "payu",
+      method: "POST",
+      url: normalizePayUBaseUrl(env.PAYU_BASE_URL!),
+      fields: checkoutFields,
+    },
+    200,
+    rate.headers,
+  );
 }
 
 async function handleBillingPortal(
@@ -3139,7 +3316,6 @@ async function handleBillingPortal(
   auditCtx: { workspaceId?: string; apiKeyId?: string },
   requestId = "",
 ): Promise<Response> {
-  assertStripeEnvFor("/v1/billing/portal", env);
   const auth = await authenticate(request, env, supabase, auditCtx);
   const rate = await rateLimit(auth.keyHash, env);
   if (!rate.allowed) {
@@ -3149,50 +3325,23 @@ async function handleBillingPortal(
       rate.headers,
     );
   }
+  return jsonResponse(
+    {
+      error: {
+        code: "GONE",
+        message: "Stripe billing portal has been removed. PayU billing is platform-only via checkout/webhooks.",
+      },
+      ...(requestId ? { request_id: requestId } : {}),
+    },
+    410,
+    rate.headers,
+  );
+}
 
-  const { data, error } = await supabase
-    .from("workspaces")
-    .select("stripe_customer_id")
-    .eq("id", auth.workspaceId)
-    .single();
-  const customerId = (data as { stripe_customer_id?: string | null } | null)?.stripe_customer_id ?? null;
-  if (error) {
-    emitEventLog("billing_endpoint_error", {
-      route: "/v1/billing/portal",
-      method: "POST",
-      status: 500,
-      request_id: requestId,
-      workspace_id_redacted: redact(auth.workspaceId, "workspace_id"),
-    });
-    return jsonResponse(
-      { error: { code: "DB_ERROR", message: error.message ?? "Failed to load workspace" } },
-      500,
-      rate.headers,
-    );
-  }
-  if (!customerId) {
-    emitEventLog("billing_endpoint_error", {
-      route: "/v1/billing/portal",
-      method: "POST",
-      status: 409,
-      request_id: requestId,
-      workspace_id_redacted: redact(auth.workspaceId, "workspace_id"),
-    });
-    return jsonResponse(
-      { error: { code: "BILLING_NOT_SETUP", message: "Workspace has no Stripe customer" } },
-      409,
-      rate.headers,
-    );
-  }
-
-  const stripe = getStripeClient(env);
-  const portal = await stripe.billingPortal.sessions.create({
-    customer: customerId,
-    return_url: new URL("/settings/billing", env.PUBLIC_APP_URL!).toString(),
-    configuration: env.STRIPE_PORTAL_CONFIGURATION_ID || undefined,
-  });
-
-  return jsonResponse({ url: portal.url }, 200, rate.headers);
+function resolveBillingWebhooksEnabled(env: Env): boolean {
+  const raw = (env.BILLING_WEBHOOKS_ENABLED ?? "1").trim().toLowerCase();
+  if (["0", "false", "no", "off"].includes(raw)) return false;
+  return true;
 }
 
 async function handleBillingWebhook(
@@ -3219,27 +3368,44 @@ async function handleBillingWebhook(
       503,
     );
   }
-  assertStripeEnvFor("/v1/billing/webhook", env);
-  const stripe = getStripeClient(env);
-  const signature = request.headers.get("stripe-signature") ?? "";
-  const toleranceSec = resolveStripeWebhookToleranceSeconds(env);
+  assertPayUEnvFor("/v1/billing/webhook", env);
   emitEventLog("webhook_received", {
     route: "/v1/billing/webhook",
     method: "POST",
     request_id: requestId || null,
-    signature_present: Boolean(signature),
+    provider: "payu",
   });
-  let event: Stripe.Event;
+
+  const rawBody = await request.text();
+  const payload = parseWebhookPayload(rawBody, (request.headers.get("content-type") ?? "").toLowerCase());
+  if (!asNonEmptyString(payload.txnid) || !asNonEmptyString(payload.status)) {
+    return jsonResponse(
+      {
+        error: { code: "BAD_REQUEST", message: "txnid and status are required in PayU webhook payload" },
+        ...(requestId ? { request_id: requestId } : {}),
+      },
+      400,
+    );
+  }
+
   try {
-    const raw = await request.text();
-    event = stripe.webhooks.constructEvent(raw, signature, env.STRIPE_WEBHOOK_SECRET!, toleranceSec);
+    const valid = await isPayUWebhookSignatureValid(payload, rawBody, request, env);
+    if (!valid) {
+      emitEventLog("billing_webhook_signature_invalid", {
+        route: "/v1/billing/webhook",
+        method: "POST",
+        status: 400,
+        request_id: requestId,
+      });
+      return jsonResponse(
+        {
+          error: { code: "invalid_webhook_signature", message: "Invalid PayU signature" },
+          ...(requestId ? { request_id: requestId } : {}),
+        },
+        400,
+      );
+    }
   } catch (err) {
-    emitEventLog("billing_webhook_signature_invalid", {
-      route: "/v1/billing/webhook",
-      method: "POST",
-      status: 400,
-      request_id: requestId,
-    });
     logger.error({
       event: "webhook_failed",
       route: "/v1/billing/webhook",
@@ -3251,7 +3417,7 @@ async function handleBillingWebhook(
     });
     return jsonResponse(
       {
-        error: { code: "invalid_webhook_signature", message: "Invalid Stripe signature" },
+        error: { code: "invalid_webhook_signature", message: "Invalid PayU signature" },
         ...(requestId ? { request_id: requestId } : {}),
       },
       400,
@@ -3259,55 +3425,41 @@ async function handleBillingWebhook(
   }
 
   try {
-    const stripeEventId = resolveStripeEventId(event);
-    const eventCreated = resolveStripeEventCreated(event);
+    const payuEventId = resolvePayUEventId(payload);
+    const eventCreated = resolvePayUEventCreated(payload);
     emitEventLog("webhook_verified", {
       route: "/v1/billing/webhook",
       method: "POST",
       request_id: requestId || null,
-      stripe_event_id: stripeEventId,
-      event_type: event.type,
+      payu_event_id: payuEventId,
+      event_type: resolvePayUEventType(payload),
       event_created: eventCreated,
-      tolerance_sec: toleranceSec,
+      provider: "payu",
     });
-    const outcome = await reconcileStripeEvent(event, supabase, env, requestId);
+    const outcome = await reconcilePayUWebhook(payload, supabase, env, requestId);
     if (outcome.outcome === "replayed") {
       emitEventLog("webhook_replayed", {
         route: "/v1/billing/webhook",
         method: "POST",
         status: 200,
         request_id: requestId || null,
-        stripe_event_id: outcome.stripeEventId,
+        payu_event_id: outcome.payuEventId,
         event_type: outcome.eventType,
         event_created: outcome.eventCreated,
         replay_status: outcome.replayStatus ?? null,
       });
     } else {
-      if (outcome.reconciled) {
-        emitEventLog("webhook_reconciled", {
-          route: "/v1/billing/webhook",
-          method: "POST",
-          status: outcome.outcome === "deferred" ? 202 : 200,
-          request_id: requestId || null,
-          stripe_event_id: outcome.stripeEventId,
-          event_type: outcome.eventType,
-          event_created: outcome.eventCreated,
-          subscription_id: outcome.subscriptionId ?? null,
-          workspace_id: outcome.workspaceId ?? null,
-        });
-      }
       if (outcome.outcome === "deferred") {
         emitEventLog("webhook_deferred", {
           route: "/v1/billing/webhook",
           method: "POST",
           status: 202,
           request_id: requestId || null,
-          stripe_event_id: outcome.stripeEventId,
+          payu_event_id: outcome.payuEventId,
           event_type: outcome.eventType,
           event_created: outcome.eventCreated,
           reason: outcome.deferReason ?? "workspace_not_found",
-          customer_id_redacted: redact(outcome.customerId, "stripe_customer_id"),
-          subscription_id: outcome.subscriptionId ?? null,
+          txn_id_redacted: redact(outcome.txnId, "payu_txn_id"),
         });
         return jsonResponse(
           {
@@ -3325,7 +3477,7 @@ async function handleBillingWebhook(
         method: "POST",
         status: 200,
         request_id: requestId || null,
-        stripe_event_id: outcome.stripeEventId,
+        payu_event_id: outcome.payuEventId,
         event_type: outcome.eventType,
         event_created: outcome.eventCreated,
         outcome: outcome.outcome,
@@ -3333,15 +3485,15 @@ async function handleBillingWebhook(
       });
     }
   } catch (err) {
-    const maybeEvent = err as { stripe_event_id?: unknown; event_type?: unknown };
+    const maybeEvent = err as { payu_event_id?: unknown; event_type?: unknown };
     logger.error({
       event: "webhook_failed",
       route: "/v1/billing/webhook",
       method: "POST",
       status: isApiError(err) ? err.status ?? 500 : 500,
       request_id: requestId || null,
-      stripe_event_id:
-        typeof maybeEvent.stripe_event_id === "string" ? maybeEvent.stripe_event_id : null,
+      payu_event_id:
+        typeof maybeEvent.payu_event_id === "string" ? maybeEvent.payu_event_id : null,
       event_type: typeof maybeEvent.event_type === "string" ? maybeEvent.event_type : null,
       err,
     });
@@ -3366,68 +3518,51 @@ async function handleBillingWebhook(
   return jsonResponse({ received: true }, 200);
 }
 
-function resolveStripeWebhookToleranceSeconds(env: Env): number {
-  const parsed = Number(env.STRIPE_WEBHOOK_TOLERANCE_SEC ?? DEFAULT_STRIPE_WEBHOOK_TOLERANCE_SEC);
-  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_STRIPE_WEBHOOK_TOLERANCE_SEC;
-  return Math.floor(parsed);
+function resolvePayUEventId(payload: PayUWebhookPayload): string {
+  const paymentId = asNonEmptyString(payload.mihpayid);
+  if (paymentId) return paymentId;
+  const txnId = asNonEmptyString(payload.txnid) ?? "unknown_txn";
+  const status = asNonEmptyString(payload.status) ?? "unknown_status";
+  const created = resolvePayUEventCreated(payload);
+  return `${txnId}:${status}:${created}`;
 }
 
-function resolveBillingReconcileOnAmbiguity(env: Env): boolean {
-  const raw = (env.BILLING_RECONCILE_ON_AMBIGUITY ?? "").trim().toLowerCase();
-  const stage = (env.ENVIRONMENT ?? env.NODE_ENV ?? "").trim().toLowerCase();
-  const defaultEnabled = stage === "prod" || stage === "production";
-  if (!raw) return defaultEnabled;
-  if (["1", "true", "yes", "on"].includes(raw)) return true;
-  if (["0", "false", "no", "off"].includes(raw)) return false;
-  return defaultEnabled;
+function resolvePayUEventType(payload: PayUWebhookPayload): string {
+  return `payment.${normalizePayUStatus(payload.status)}`;
 }
 
-function resolveBillingWebhooksEnabled(env: Env): boolean {
-  const raw = (env.BILLING_WEBHOOKS_ENABLED ?? "1").trim().toLowerCase();
-  if (["0", "false", "no", "off"].includes(raw)) return false;
-  return true;
+function resolvePayUEventCreated(payload: PayUWebhookPayload): number {
+  const source = payload.addedon ?? (payload as { created?: unknown }).created;
+  return parsePayUEventCreated(source);
 }
 
-function resolveStripeEventId(event: Stripe.Event): string {
-  const raw = typeof event.id === "string" ? event.id.trim() : "";
-  if (raw) return raw;
-  return `missing_event_id:${event.type}:${resolveStripeEventCreated(event)}`;
-}
-
-function resolveStripeEventCreated(event: Stripe.Event): number {
-  const parsed = Number((event as { created?: unknown }).created);
-  if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
-  return Math.floor(Date.now() / 1000);
-}
-
-type StripeWebhookEventRow = {
+type PayUWebhookEventRow = {
   event_id: string;
   status?: string | null;
   event_created?: number | null;
-  event_type?: string | null;
   processed_at?: string | null;
   workspace_id?: string | null;
-  customer_id?: string | null;
-  subscription_id?: string | null;
+  txn_id?: string | null;
+  payment_id?: string | null;
+  payu_status?: string | null;
   defer_reason?: string | null;
   request_id?: string | null;
   last_error?: string | null;
 };
 
-type ReconcileWebhookResult = {
+type PayUReconcileWebhookResult = {
   outcome: "processed" | "replayed" | "ignored_stale" | "deferred";
-  stripeEventId: string;
+  payuEventId: string;
   eventType: string;
   eventCreated: number;
   workspaceId?: string | null;
-  customerId?: string | null;
-  subscriptionId?: string | null;
+  txnId?: string | null;
+  paymentId?: string | null;
   replayStatus?: string | null;
   deferReason?: string | null;
-  reconciled?: boolean;
 };
 
-function shouldApplyStripeEvent(
+function shouldApplyPayUEvent(
   lastEventCreatedRaw: unknown,
   lastEventIdRaw: unknown,
   incomingEventCreated: number,
@@ -3442,21 +3577,31 @@ function shouldApplyStripeEvent(
   return incomingEventId.localeCompare(lastEventId) > 0;
 }
 
-async function claimStripeWebhookEvent(
+async function claimPayUWebhookEvent(
   supabase: SupabaseClient,
   eventId: string,
   eventType: string,
   eventCreated: number,
+  payload: PayUWebhookPayload,
   requestId = "",
 ): Promise<{ replayed: boolean; replayStatus?: string | null }> {
+  const txnId = asNonEmptyString(payload.txnid);
+  if (!txnId) throw createHttpError(400, "BAD_REQUEST", "PayU payload missing txnid");
+  const paymentId = asNonEmptyString(payload.mihpayid);
+  const payuStatus = normalizePayUStatus(payload.status);
+
   const inserted = await supabase
-    .from("stripe_webhook_events")
+    .from("payu_webhook_events")
     .insert({
       event_id: eventId,
       event_type: eventType,
       event_created: eventCreated,
+      txn_id: txnId,
+      payment_id: paymentId,
+      payu_status: payuStatus,
       status: "processing",
       request_id: requestId || null,
+      payload,
       processed_at: null,
       last_error: null,
     })
@@ -3468,22 +3613,26 @@ async function claimStripeWebhookEvent(
   }
 
   const existing = await supabase
-    .from("stripe_webhook_events")
+    .from("payu_webhook_events")
     .select("event_id,status")
     .eq("event_id", eventId)
     .maybeSingle();
   if (existing.error) {
     throw createHttpError(500, "DB_ERROR", existing.error.message ?? "Failed to read webhook idempotency row");
   }
-  const existingStatus = ((existing.data as StripeWebhookEventRow | null)?.status ?? "processed").toLowerCase();
+  const existingStatus = ((existing.data as PayUWebhookEventRow | null)?.status ?? "processed").toLowerCase();
   if (existingStatus === "failed" || existingStatus === "deferred") {
     const retry = await supabase
-      .from("stripe_webhook_events")
+      .from("payu_webhook_events")
       .update({
         status: "processing",
         request_id: requestId || null,
         event_type: eventType,
         event_created: eventCreated,
+        txn_id: txnId,
+        payment_id: paymentId,
+        payu_status: payuStatus,
+        payload,
         processed_at: null,
         last_error: null,
         defer_reason: null,
@@ -3497,26 +3646,28 @@ async function claimStripeWebhookEvent(
   return { replayed: true, replayStatus: existingStatus };
 }
 
-async function finalizeStripeWebhookEvent(
+async function finalizePayUWebhookEvent(
   supabase: SupabaseClient,
   eventId: string,
   status: "processed" | "ignored_stale" | "deferred",
   fields: {
     workspaceId?: string | null;
-    customerId?: string | null;
-    subscriptionId?: string | null;
+    txnId?: string | null;
+    paymentId?: string | null;
+    payuStatus?: string | null;
     requestId?: string;
     deferReason?: string | null;
   },
 ): Promise<void> {
   const finalize = await supabase
-    .from("stripe_webhook_events")
+    .from("payu_webhook_events")
     .update({
       status,
       processed_at: status === "deferred" ? null : new Date().toISOString(),
       workspace_id: fields.workspaceId ?? null,
-      customer_id: fields.customerId ?? null,
-      subscription_id: fields.subscriptionId ?? null,
+      txn_id: fields.txnId ?? null,
+      payment_id: fields.paymentId ?? null,
+      payu_status: fields.payuStatus ?? null,
       request_id: fields.requestId || null,
       defer_reason: status === "deferred" ? fields.deferReason ?? "deferred" : null,
       last_error: status === "deferred" ? fields.deferReason ?? "Webhook deferred" : null,
@@ -3527,14 +3678,14 @@ async function finalizeStripeWebhookEvent(
   }
 }
 
-async function failStripeWebhookEvent(
+async function failPayUWebhookEvent(
   supabase: SupabaseClient,
   eventId: string,
   err: unknown,
 ): Promise<void> {
   const message = redact((err as Error)?.message, "message");
   const fail = await supabase
-    .from("stripe_webhook_events")
+    .from("payu_webhook_events")
     .update({
       status: "failed",
       last_error: typeof message === "string" ? message : "Webhook processing failed",
@@ -3545,577 +3696,142 @@ async function failStripeWebhookEvent(
   if (fail.error) {
     logger.error({
       event: "webhook_event_mark_failed_error",
-      stripe_event_id: eventId,
+      payu_event_id: eventId,
       error_message: fail.error.message,
       err: fail.error,
     });
   }
 }
 
-async function findWorkspaceForCustomer(
+async function findWorkspaceForPayUEvent(
   supabase: SupabaseClient,
-  customerId: string,
-  metadataWorkspaceId?: string | null,
+  workspaceHint: string | null,
+  txnId: string | null,
 ): Promise<string | null> {
-  const byCustomer = await supabase
-    .from("workspaces")
-    .select("id")
-    .eq("stripe_customer_id", customerId)
-    .maybeSingle();
-  if (byCustomer.data?.id) return byCustomer.data.id as string;
-  if (metadataWorkspaceId) {
-    const byMeta = await supabase.from("workspaces").select("id").eq("id", metadataWorkspaceId).maybeSingle();
-    if (byMeta.data?.id) return byMeta.data.id as string;
+  if (workspaceHint) {
+    const byHint = await supabase.from("workspaces").select("id").eq("id", workspaceHint).maybeSingle();
+    if (byHint.data?.id) return byHint.data.id as string;
+  }
+  if (txnId) {
+    const byTxn = await supabase.from("workspaces").select("id").eq("payu_txn_id", txnId).maybeSingle();
+    if (byTxn.data?.id) return byTxn.data.id as string;
   }
   return null;
 }
 
-function asStripeId(raw: unknown): string | null {
-  if (typeof raw === "string" && raw.trim().length > 0) return raw.trim();
-  if (raw && typeof raw === "object" && typeof (raw as { id?: unknown }).id === "string") {
-    const id = ((raw as { id?: unknown }).id as string).trim();
-    return id.length > 0 ? id : null;
-  }
-  return null;
-}
-
-function extractEventSubscriptionId(event: Stripe.Event): string | null {
-  if (event.type.startsWith("customer.subscription.")) {
-    const subscription = event.data.object as Stripe.Subscription;
-    return asStripeId(subscription?.id);
-  }
-  if (event.type === "invoice.paid" || event.type === "invoice.payment_failed") {
-    const invoice = event.data.object as Stripe.Invoice & { subscription?: unknown };
-    return asStripeId(invoice.subscription);
-  }
-  return null;
-}
-
-function isPlanDowngrade(
-  current: AuthContext["planStatus"] | undefined,
-  incoming: AuthContext["planStatus"] | undefined,
-): boolean {
-  if (!current || !incoming) return false;
-  const currentPaid = current === "active" || current === "trialing";
-  const incomingPaid = incoming === "active" || incoming === "trialing";
-  return currentPaid && !incomingPaid;
-}
-
-function resolveCursorFields(
-  current: {
-    stripe_last_event_created?: number | null;
-    stripe_last_event_id?: string | null;
-    stripe_last_event_type?: string | null;
-  } | null,
-  eventId: string,
-  eventType: string,
-  eventCreated: number,
-): {
-  stripe_last_event_id: string | null;
-  stripe_last_event_type: string | null;
-  stripe_last_event_created: number | null;
-} {
-  if (shouldApplyStripeEvent(current?.stripe_last_event_created, current?.stripe_last_event_id, eventCreated, eventId)) {
-    return {
-      stripe_last_event_id: eventId,
-      stripe_last_event_type: eventType,
-      stripe_last_event_created: eventCreated,
-    };
-  }
-  return {
-    stripe_last_event_id: current?.stripe_last_event_id ?? null,
-    stripe_last_event_type: current?.stripe_last_event_type ?? null,
-    stripe_last_event_created: current?.stripe_last_event_created ?? null,
-  };
-}
-
-type CanonicalBillingSnapshot = {
-  customerId: string;
-  subscriptionId: string | null;
-  workspaceHint: string | null;
-  plan: AuthContext["plan"];
-  planStatus: AuthContext["planStatus"];
-  priceId: string | null;
-  currentPeriodEnd: string | null;
-  cancelAtPeriodEnd: boolean;
-};
-
-function snapshotFromSubscription(subscription: Stripe.Subscription, env: Env): CanonicalBillingSnapshot | null {
-  const customerId = asStripeId(subscription.customer);
-  if (!customerId) return null;
-  const subscriptionId = asStripeId(subscription.id);
-  const workspaceHint = typeof subscription.metadata?.workspace_id === "string" ? subscription.metadata.workspace_id : null;
-  const priceId =
-    subscription.items?.data?.[0]?.price?.id ??
-    (typeof subscription.items?.data?.[0]?.price === "string" ? subscription.items.data[0].price : null);
-  const planStatus = normalizeStripeStatus(subscription.status);
-  const plan: AuthContext["plan"] = planStatus === "active" || planStatus === "trialing" ? planFromPriceId(priceId, env) : "free";
-  const currentPeriodEnd = subscription.current_period_end ? new Date(subscription.current_period_end * 1000).toISOString() : null;
-  return {
-    customerId,
-    subscriptionId,
-    workspaceHint,
-    plan,
-    planStatus,
-    priceId: priceId ?? null,
-    currentPeriodEnd,
-    cancelAtPeriodEnd: Boolean(subscription.cancel_at_period_end),
-  };
-}
-
-async function fetchCanonicalBillingSnapshot(
-  stripe: Stripe,
-  event: Stripe.Event,
-  env: Env,
+async function reconcilePayUWebhook(
+  payload: PayUWebhookPayload,
+  supabase: SupabaseClient,
+  _env: Env,
   requestId = "",
-): Promise<CanonicalBillingSnapshot | null> {
-  try {
-    if (event.type.startsWith("customer.subscription.")) {
-      const subId = extractEventSubscriptionId(event);
-      if (!subId) return null;
-      const canonical = await stripe.subscriptions.retrieve(subId);
-      return snapshotFromSubscription(canonical as Stripe.Subscription, env);
-    }
-
-    if (event.type === "invoice.paid" || event.type === "invoice.payment_failed") {
-      const baseInvoice = event.data.object as Stripe.Invoice & { subscription?: unknown };
-      const invoiceId = asStripeId(baseInvoice.id);
-      const invoice = invoiceId
-        ? ((await stripe.invoices.retrieve(invoiceId)) as Stripe.Invoice & { subscription?: unknown })
-        : baseInvoice;
-      const subscriptionId = asStripeId(invoice.subscription);
-      if (!subscriptionId) return null;
-      const canonical = await stripe.subscriptions.retrieve(subscriptionId);
-      return snapshotFromSubscription(canonical as Stripe.Subscription, env);
-    }
-  } catch (err) {
-    emitEventLog("webhook_reconcile_fetch_failed", {
-      route: "/v1/billing/webhook",
-      method: "POST",
-      request_id: requestId || null,
-      stripe_event_id: resolveStripeEventId(event),
-      event_type: event.type,
-      error_message: redact((err as Error)?.message, "message"),
-    });
-    return null;
-  }
-
-  return null;
-}
-
-async function applyCanonicalSnapshotToWorkspace(
-  supabase: SupabaseClient,
-  workspaceId: string,
-  currentBilling: {
-    stripe_last_event_created?: number | null;
-    stripe_last_event_id?: string | null;
-    stripe_last_event_type?: string | null;
-  } | null,
-  eventId: string,
-  eventType: string,
-  eventCreated: number,
-  snapshot: CanonicalBillingSnapshot,
-): Promise<void> {
-  const cursor = resolveCursorFields(currentBilling, eventId, eventType, eventCreated);
-  await updateWorkspaceBilling(supabase, workspaceId, {
-    stripe_customer_id: snapshot.customerId,
-    stripe_subscription_id: snapshot.subscriptionId,
-    stripe_price_id: snapshot.priceId,
-    plan: snapshot.plan,
-    plan_status: snapshot.planStatus,
-    current_period_end: snapshot.currentPeriodEnd,
-    cancel_at_period_end: snapshot.cancelAtPeriodEnd,
-    ...cursor,
-  });
-}
-
-async function updateWorkspaceBilling(
-  supabase: SupabaseClient,
-  workspaceId: string,
-  fields: Partial<{
-    stripe_customer_id: string | null;
-    stripe_subscription_id: string | null;
-    stripe_price_id: string | null;
-    plan: AuthContext["plan"];
-    plan_status: AuthContext["planStatus"];
-    current_period_end: string | null;
-    cancel_at_period_end: boolean;
-    stripe_last_event_id: string | null;
-    stripe_last_event_type: string | null;
-    stripe_last_event_created: number | null;
-  }>,
-): Promise<void> {
-  const { error } = await supabase
-    .from("workspaces")
-    .update({ ...fields, updated_at: new Date().toISOString() })
-    .eq("id", workspaceId);
-  if (error) {
-    throw createHttpError(500, "DB_ERROR", error.message ?? "Failed to update billing");
-  }
-}
-
-async function reconcileStripeEvent(
-  event: Stripe.Event,
-  supabase: SupabaseClient,
-  env: Env,
-  requestId = "",
-): Promise<ReconcileWebhookResult> {
-  const eventId = resolveStripeEventId(event);
-  const eventType = event.type;
-  const eventCreated = resolveStripeEventCreated(event);
-  const claim = await claimStripeWebhookEvent(supabase, eventId, eventType, eventCreated, requestId);
+  forcedEventId?: string,
+): Promise<PayUReconcileWebhookResult> {
+  const eventId = forcedEventId ?? resolvePayUEventId(payload);
+  const eventType = resolvePayUEventType(payload);
+  const eventCreated = resolvePayUEventCreated(payload);
+  const claim = await claimPayUWebhookEvent(supabase, eventId, eventType, eventCreated, payload, requestId);
   if (claim.replayed) {
     return {
       outcome: "replayed",
-      stripeEventId: eventId,
+      payuEventId: eventId,
       eventType,
       eventCreated,
       replayStatus: claim.replayStatus ?? null,
     };
   }
 
-  const stripe = getStripeClient(env);
-  const reconcileOnAmbiguity = resolveBillingReconcileOnAmbiguity(env);
-  let workspaceId: string | null = null;
-  let customerId: string | null = null;
-  let subscriptionId: string | null = extractEventSubscriptionId(event);
+  const payuStatus = normalizePayUStatus(payload.status);
+  const txnId = asNonEmptyString(payload.txnid);
+  const paymentId = asNonEmptyString(payload.mihpayid);
+  const workspaceHint = asNonEmptyString(payload.udf1);
+  const workspaceId = await findWorkspaceForPayUEvent(supabase, workspaceHint, txnId);
   let deferReason: string | null = null;
-  let reconciled = false;
   let outcome: "processed" | "ignored_stale" | "deferred" = "processed";
 
-  const markWorkspaceDeferred = (workspaceHint?: unknown) => {
-    deferReason = "workspace_not_found";
-    outcome = "deferred";
-    emitEventLog("billing_webhook_workspace_not_found", {
-      route: "/v1/billing/webhook",
-      method: "POST",
-      status: 202,
-      request_id: requestId || null,
-      customer_id_redacted: redact(customerId, "stripe_customer_id"),
-      workspace_id_redacted: redact(workspaceHint, "workspace_id"),
-      stripe_event_id: eventId,
-      event_type: eventType,
-      subscription_id: subscriptionId ?? null,
-    });
-  };
-
   try {
-    switch (eventType) {
-    case "customer.subscription.created":
-    case "customer.subscription.updated":
-    case "customer.subscription.deleted": {
-      const subscription = event.data.object as Stripe.Subscription;
-      customerId = asStripeId(subscription.customer) ?? "";
-      subscriptionId = asStripeId(subscription.id) ?? subscriptionId;
-      workspaceId = await findWorkspaceForCustomer(
-        supabase,
-        customerId,
-        (subscription.metadata?.workspace_id as string | undefined) ?? null,
-      );
-      if (!workspaceId) {
-        markWorkspaceDeferred(subscription.metadata?.workspace_id);
-        break;
-      }
-      const priceId =
-        subscription.items?.data?.[0]?.price?.id ??
-        (typeof subscription.items?.data?.[0]?.price === "string" ? subscription.items.data[0].price : null);
-      const plan_status = normalizeStripeStatus(subscription.status);
-      const plan: AuthContext["plan"] =
-        plan_status === "active" || plan_status === "trialing" ? planFromPriceId(priceId, env) : "free";
+    if (!workspaceId) {
+      deferReason = "workspace_not_found";
+      outcome = "deferred";
+    } else {
       const currentRow = await supabase
         .from("workspaces")
-        .select("plan_status,stripe_subscription_id,stripe_last_event_created,stripe_last_event_id,stripe_last_event_type")
+        .select("plan_status,payu_last_event_created,payu_last_event_id")
         .eq("id", workspaceId)
         .maybeSingle();
       if (currentRow.error) {
         throw createHttpError(500, "DB_ERROR", currentRow.error.message ?? "Failed to read billing cursor");
       }
-      const currentBilling = currentRow.data as
+      const current = currentRow.data as
         | {
           plan_status?: string;
-          stripe_subscription_id?: string | null;
-          stripe_last_event_created?: number | null;
-          stripe_last_event_id?: string | null;
-          stripe_last_event_type?: string | null;
+          payu_last_event_created?: number | null;
+          payu_last_event_id?: string | null;
         }
         | null;
-      const shouldApply = shouldApplyStripeEvent(
-        currentBilling?.stripe_last_event_created,
-        currentBilling?.stripe_last_event_id,
-        eventCreated,
-        eventId,
-      );
-      const lastCreated = Number(currentBilling?.stripe_last_event_created);
-      const isTie = Number.isFinite(lastCreated) && lastCreated > 0 && lastCreated === eventCreated;
-      const currentStatus = normalizePlanStatus(currentBilling?.plan_status);
-      const unknownCurrentState = !currentBilling?.stripe_subscription_id || !currentBilling?.plan_status;
-      const shouldReconcile =
-        reconcileOnAmbiguity &&
-        (isTie || !shouldApply || unknownCurrentState || isPlanDowngrade(currentStatus, plan_status));
-      if (shouldReconcile) {
-        const canonical = await fetchCanonicalBillingSnapshot(stripe, event, env, requestId);
-        if (canonical) {
-          customerId = canonical.customerId;
-          subscriptionId = canonical.subscriptionId;
-          workspaceId = await findWorkspaceForCustomer(supabase, canonical.customerId, canonical.workspaceHint);
-          if (!workspaceId) {
-            markWorkspaceDeferred(canonical.workspaceHint);
-            break;
-          }
-          await applyCanonicalSnapshotToWorkspace(
-            supabase,
-            workspaceId,
-            currentBilling,
-            eventId,
-            eventType,
-            eventCreated,
-            canonical,
-          );
-          const oldStatus = normalizePlanStatus(currentBilling?.plan_status);
-          if (
-            (canonical.planStatus === "active" || canonical.planStatus === "trialing") &&
-            !(oldStatus === "active" || oldStatus === "trialing")
-          ) {
-            void emitProductEvent(
-              supabase,
-              "upgrade_activated",
-              {
-                workspaceId,
-                requestId,
-                route: "/v1/billing/webhook",
-                method: "POST",
-                status: 200,
-                effectivePlan: canonical.plan,
-                planStatus: canonical.planStatus,
-              },
-            );
-          }
-          reconciled = true;
-          break;
-        }
-      }
+      const shouldApply = shouldApplyPayUEvent(current?.payu_last_event_created, current?.payu_last_event_id, eventCreated, eventId);
       if (!shouldApply) {
         outcome = "ignored_stale";
-        break;
+      } else {
+        const plan = planFromPayUStatus(payuStatus);
+        const planStatus = planStatusFromPayUStatus(payuStatus);
+        const oldStatus = normalizePlanStatus(current?.plan_status);
+        const updatePayload = {
+          billing_provider: "payu",
+          payu_txn_id: txnId,
+          payu_payment_id: paymentId,
+          payu_last_status: payuStatus,
+          payu_last_plan: plan,
+          payu_last_event_id: eventId,
+          payu_last_event_created: eventCreated,
+          plan,
+          plan_status: planStatus,
+          current_period_end: paymentPeriodEndFromStatus(payuStatus),
+          cancel_at_period_end: false,
+          updated_at: new Date().toISOString(),
+        };
+        const updated = await supabase.from("workspaces").update(updatePayload).eq("id", workspaceId);
+        if (updated.error) {
+          throw createHttpError(500, "DB_ERROR", updated.error.message ?? "Failed to update PayU billing state");
+        }
+        if ((planStatus === "active" || planStatus === "trialing") && !(oldStatus === "active" || oldStatus === "trialing")) {
+          void emitProductEvent(
+            supabase,
+            "upgrade_activated",
+            {
+              workspaceId,
+              requestId,
+              route: "/v1/billing/webhook",
+              method: "POST",
+              status: 200,
+              effectivePlan: plan,
+              planStatus,
+            },
+          );
+        }
       }
-      const oldStatus = normalizePlanStatus(currentBilling?.plan_status);
-      const current_period_end = subscription.current_period_end
-        ? new Date(subscription.current_period_end * 1000).toISOString()
-        : null;
-      await updateWorkspaceBilling(supabase, workspaceId, {
-        stripe_customer_id: customerId,
-        stripe_subscription_id: subscription.id,
-        stripe_price_id: priceId ?? null,
-        plan,
-        plan_status,
-        current_period_end,
-        cancel_at_period_end: Boolean(subscription.cancel_at_period_end),
-        stripe_last_event_id: eventId,
-        stripe_last_event_type: eventType,
-        stripe_last_event_created: eventCreated,
-      });
+    }
 
-      if ((plan_status === "active" || plan_status === "trialing") && !(oldStatus === "active" || oldStatus === "trialing")) {
-        void emitProductEvent(
-          supabase,
-          "upgrade_activated",
-          {
-            workspaceId,
-            requestId,
-            route: "/v1/billing/webhook",
-            method: "POST",
-            status: 200,
-            effectivePlan: plan,
-            planStatus: plan_status,
-          },
-        );
-      }
-      break;
-    }
-    case "invoice.paid": {
-      const invoice = event.data.object as Stripe.Invoice & { subscription?: unknown };
-      customerId = asStripeId(invoice.customer) ?? "";
-      subscriptionId = asStripeId(invoice.subscription) ?? subscriptionId;
-      workspaceId = await findWorkspaceForCustomer(
-        supabase,
-        customerId,
-        (invoice.metadata?.workspace_id as string | undefined) ?? null,
-      );
-      if (!workspaceId) {
-        markWorkspaceDeferred(invoice.metadata?.workspace_id);
-        break;
-      }
-      const currentRow = await supabase
-        .from("workspaces")
-        .select("plan_status,stripe_subscription_id,stripe_last_event_created,stripe_last_event_id,stripe_last_event_type")
-        .eq("id", workspaceId)
-        .maybeSingle();
-      if (currentRow.error) {
-        throw createHttpError(500, "DB_ERROR", currentRow.error.message ?? "Failed to read billing cursor");
-      }
-      const currentBilling = currentRow.data as
-        | {
-          plan_status?: string;
-          stripe_subscription_id?: string | null;
-          stripe_last_event_created?: number | null;
-          stripe_last_event_id?: string | null;
-          stripe_last_event_type?: string | null;
-        }
-        | null;
-      const shouldApply = shouldApplyStripeEvent(
-        currentBilling?.stripe_last_event_created,
-        currentBilling?.stripe_last_event_id,
-        eventCreated,
-        eventId,
-      );
-      const lastCreated = Number(currentBilling?.stripe_last_event_created);
-      const isTie = Number.isFinite(lastCreated) && lastCreated > 0 && lastCreated === eventCreated;
-      const shouldReconcile =
-        reconcileOnAmbiguity &&
-        (isTie || !shouldApply || !currentBilling?.stripe_subscription_id || !currentBilling?.plan_status);
-      if (shouldReconcile) {
-        const canonical = await fetchCanonicalBillingSnapshot(stripe, event, env, requestId);
-        if (canonical) {
-          customerId = canonical.customerId;
-          subscriptionId = canonical.subscriptionId;
-          workspaceId = await findWorkspaceForCustomer(supabase, canonical.customerId, canonical.workspaceHint);
-          if (!workspaceId) {
-            markWorkspaceDeferred(canonical.workspaceHint);
-            break;
-          }
-          await applyCanonicalSnapshotToWorkspace(
-            supabase,
-            workspaceId,
-            currentBilling,
-            eventId,
-            eventType,
-            eventCreated,
-            canonical,
-          );
-          reconciled = true;
-          break;
-        }
-      }
-      if (!shouldApply) {
-        outcome = "ignored_stale";
-        break;
-      }
-      const cursor = resolveCursorFields(currentBilling, eventId, eventType, eventCreated);
-      await updateWorkspaceBilling(supabase, workspaceId, {
-        plan: "pro",
-        plan_status: "active",
-        stripe_customer_id: customerId,
-        stripe_subscription_id: subscriptionId,
-        ...cursor,
-      });
-      break;
-    }
-    case "invoice.payment_failed": {
-      const invoice = event.data.object as Stripe.Invoice & { subscription?: unknown };
-      customerId = asStripeId(invoice.customer) ?? "";
-      subscriptionId = asStripeId(invoice.subscription) ?? subscriptionId;
-      workspaceId = await findWorkspaceForCustomer(
-        supabase,
-        customerId,
-        (invoice.metadata?.workspace_id as string | undefined) ?? null,
-      );
-      if (!workspaceId) {
-        markWorkspaceDeferred(invoice.metadata?.workspace_id);
-        break;
-      }
-      const currentRow = await supabase
-        .from("workspaces")
-        .select("plan_status,stripe_subscription_id,stripe_last_event_created,stripe_last_event_id,stripe_last_event_type")
-        .eq("id", workspaceId)
-        .maybeSingle();
-      if (currentRow.error) {
-        throw createHttpError(500, "DB_ERROR", currentRow.error.message ?? "Failed to read billing cursor");
-      }
-      const currentBilling = currentRow.data as
-        | {
-          plan_status?: string;
-          stripe_subscription_id?: string | null;
-          stripe_last_event_created?: number | null;
-          stripe_last_event_id?: string | null;
-          stripe_last_event_type?: string | null;
-        }
-        | null;
-      const shouldApply = shouldApplyStripeEvent(
-        currentBilling?.stripe_last_event_created,
-        currentBilling?.stripe_last_event_id,
-        eventCreated,
-        eventId,
-      );
-      const lastCreated = Number(currentBilling?.stripe_last_event_created);
-      const isTie = Number.isFinite(lastCreated) && lastCreated > 0 && lastCreated === eventCreated;
-      const shouldReconcile =
-        reconcileOnAmbiguity &&
-        (isTie ||
-          !shouldApply ||
-          !currentBilling?.stripe_subscription_id ||
-          !currentBilling?.plan_status ||
-          isPlanDowngrade(normalizePlanStatus(currentBilling?.plan_status), "past_due"));
-      if (shouldReconcile) {
-        const canonical = await fetchCanonicalBillingSnapshot(stripe, event, env, requestId);
-        if (canonical) {
-          customerId = canonical.customerId;
-          subscriptionId = canonical.subscriptionId;
-          workspaceId = await findWorkspaceForCustomer(supabase, canonical.customerId, canonical.workspaceHint);
-          if (!workspaceId) {
-            markWorkspaceDeferred(canonical.workspaceHint);
-            break;
-          }
-          await applyCanonicalSnapshotToWorkspace(
-            supabase,
-            workspaceId,
-            currentBilling,
-            eventId,
-            eventType,
-            eventCreated,
-            canonical,
-          );
-          reconciled = true;
-          break;
-        }
-      }
-      if (!shouldApply) {
-        outcome = "ignored_stale";
-        break;
-      }
-      const cursor = resolveCursorFields(currentBilling, eventId, eventType, eventCreated);
-      await updateWorkspaceBilling(supabase, workspaceId, {
-        plan: "free",
-        plan_status: "past_due",
-        stripe_customer_id: customerId,
-        stripe_subscription_id: subscriptionId,
-        ...cursor,
-      });
-      break;
-    }
-    default:
-      break;
-    }
-    const finalizeStatus = outcome as "processed" | "ignored_stale" | "deferred";
-    await finalizeStripeWebhookEvent(
+    await finalizePayUWebhookEvent(
       supabase,
       eventId,
-      finalizeStatus,
-      { workspaceId, customerId, subscriptionId, requestId, deferReason },
+      outcome,
+      { workspaceId, txnId, paymentId, payuStatus, requestId, deferReason },
     );
   } catch (err) {
-    await failStripeWebhookEvent(supabase, eventId, err);
+    await failPayUWebhookEvent(supabase, eventId, err);
     throw err;
   }
+
   return {
     outcome,
-    stripeEventId: eventId,
+    payuEventId: eventId,
     eventType,
     eventCreated,
     workspaceId,
-    customerId,
-    subscriptionId,
+    txnId,
+    paymentId,
     deferReason,
-    reconciled,
   };
 }
+
 

@@ -15,7 +15,6 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.2",
-    "jszip": "^3.10.1",
-    "stripe": "^16.6.0"
+    "jszip": "^3.10.1"
   }
 }
