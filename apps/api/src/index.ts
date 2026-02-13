@@ -1300,6 +1300,11 @@ export default {
         return response;
       }
 
+      if (request.method === "GET" && url.pathname === "/v1/admin/billing/health") {
+        response = await handleAdminBillingHealth(request, env, supabase);
+        return response;
+      }
+
       if (request.method === "POST" && url.pathname === "/v1/export") {
         response = await handleExport(request, env, supabase, auditCtx);
         return response;
@@ -2976,6 +2981,7 @@ export {
   handleBillingCheckout,
   handleBillingPortal,
   handleBillingWebhook,
+  handleAdminBillingHealth,
   handleUsageToday,
   handleSearch,
   handleCreateMemory,
@@ -3496,6 +3502,100 @@ async function handleReprocessDeferredWebhooks(
       deferred,
       failed,
       status_filter: statusFilterRaw,
+    },
+    200,
+    rate.headers,
+  );
+}
+
+async function handleAdminBillingHealth(
+  request: Request,
+  env: Env,
+  supabase: SupabaseClient,
+): Promise<Response> {
+  const { token } = await requireAdmin(request, env);
+  const rate = await rateLimit(`admin:${token}`, env);
+  if (!rate.allowed) {
+    return jsonResponse(
+      { error: { code: "rate_limited", message: "Rate limit exceeded" } },
+      429,
+      rate.headers,
+    );
+  }
+
+  const nowIso = new Date().toISOString();
+  const verifyUrl = asNonEmptyString(env.PAYU_VERIFY_URL);
+  let verifyHost: string | null = null;
+  if (verifyUrl) {
+    try {
+      verifyHost = new URL(verifyUrl).host;
+    } catch {
+      verifyHost = null;
+    }
+  }
+
+  const dbProbe = await supabase.from("workspaces").select("id").limit(1);
+  const dbConnectivity = {
+    ok: !dbProbe.error,
+    error_code: dbProbe.error?.code ?? null,
+    error_message: dbProbe.error ? redact(dbProbe.error.message ?? "DB probe failed", "message") : null,
+  };
+
+  const webhookRows = await supabase
+    .from("payu_webhook_events")
+    .select("event_id,status,payu_status,event_created,processed_at,defer_reason,last_error")
+    .order("event_created", { ascending: false })
+    .limit(10);
+  const webhookSummary = {
+    ok: !webhookRows.error,
+    error_code: webhookRows.error?.code ?? null,
+    error_message: webhookRows.error ? redact(webhookRows.error.message ?? "Webhook query failed", "message") : null,
+    items: ((webhookRows.data as Array<Record<string, unknown>> | null) ?? []).map((row) => ({
+      event_id_redacted: redact(row.event_id, "payu_event_id"),
+      status: typeof row.status === "string" ? row.status : null,
+      payu_status: typeof row.payu_status === "string" ? row.payu_status : null,
+      event_created: typeof row.event_created === "number" ? row.event_created : null,
+      processed_at: typeof row.processed_at === "string" ? row.processed_at : null,
+      defer_reason: typeof row.defer_reason === "string" ? row.defer_reason : null,
+      last_error: typeof row.last_error === "string" ? redact(row.last_error, "message") : null,
+    })),
+  };
+
+  const txnRows = await supabase
+    .from("payu_transactions")
+    .select("txn_id,workspace_id,plan_code,status,amount,currency,verify_status,updated_at,last_error")
+    .order("updated_at", { ascending: false })
+    .limit(10);
+  const transactionSummary = {
+    ok: !txnRows.error,
+    error_code: txnRows.error?.code ?? null,
+    error_message: txnRows.error ? redact(txnRows.error.message ?? "Transaction query failed", "message") : null,
+    items: ((txnRows.data as Array<Record<string, unknown>> | null) ?? []).map((row) => ({
+      txn_id_redacted: redact(row.txn_id, "payu_txn_id"),
+      workspace_id_redacted: redact(row.workspace_id, "workspace_id"),
+      plan_code: typeof row.plan_code === "string" ? row.plan_code : null,
+      status: typeof row.status === "string" ? row.status : null,
+      amount: typeof row.amount === "number" || typeof row.amount === "string" ? String(row.amount) : null,
+      currency: typeof row.currency === "string" ? row.currency : null,
+      verify_status: typeof row.verify_status === "string" ? row.verify_status : null,
+      updated_at: typeof row.updated_at === "string" ? row.updated_at : null,
+      last_error: typeof row.last_error === "string" ? redact(row.last_error, "message") : null,
+    })),
+  };
+
+  return jsonResponse(
+    {
+      now: nowIso,
+      billing_webhooks_enabled: resolveBillingWebhooksEnabled(env),
+      payu_verify: {
+        configured: Boolean(verifyUrl),
+        host: verifyHost,
+        timeout_ms: resolvePayUVerifyTimeoutMs(env),
+        currency: normalizeCurrency(env.PAYU_CURRENCY),
+      },
+      db_connectivity: dbConnectivity,
+      payu_webhook_events: webhookSummary,
+      payu_transactions: transactionSummary,
     },
     200,
     rate.headers,

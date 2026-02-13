@@ -8,6 +8,7 @@ import {
   handleBillingCheckout,
   handleBillingPortal,
   handleBillingWebhook,
+  handleAdminBillingHealth,
   handleUsageToday,
   handleSearch,
   handleCreateMemory,
@@ -61,6 +62,7 @@ type PayUTransactionRow = {
   verify_payload?: Record<string, unknown> | null;
   request_id?: string | null;
   last_error?: string | null;
+  updated_at?: string | null;
 };
 
 type WorkspaceEntitlementRow = {
@@ -139,6 +141,7 @@ function makeSupabase(options?: {
         const filters: Array<[string, unknown]> = [];
         const builder = {
           select: () => builder,
+          limit: async () => ({ data: [{ id: workspace.id }], error: null }),
           eq: (col: string, val: unknown) => {
             filters.push([col, val]);
             return builder;
@@ -202,6 +205,13 @@ function makeSupabase(options?: {
         };
       }
       if (table === "payu_transactions") {
+        const listTransactions = () =>
+          Array.from(payuTransactions.values()).sort((a, b) => {
+            const aTs = Date.parse(a.updated_at ?? "");
+            const bTs = Date.parse(b.updated_at ?? "");
+            if (Number.isFinite(aTs) && Number.isFinite(bTs)) return bTs - aTs;
+            return 0;
+          });
         return {
           select: () => ({
             eq: (_col: string, val: unknown) => ({
@@ -210,10 +220,16 @@ function makeSupabase(options?: {
                 error: null,
               }),
             }),
+            order: () => ({
+              limit: async (n: number) => ({ data: listTransactions().slice(0, n), error: null }),
+            }),
           }),
           insert: (rows: Array<PayUTransactionRow> | PayUTransactionRow) => {
             const list = Array.isArray(rows) ? rows : [rows];
-            const row = { ...list[0] };
+            const row = {
+              updated_at: new Date().toISOString(),
+              ...list[0],
+            };
             if (payuTransactions.has(row.txn_id)) {
               return { data: null, error: { code: "23505", message: "duplicate" } };
             }
@@ -223,7 +239,7 @@ function makeSupabase(options?: {
           update: (fields: Partial<PayUTransactionRow>) => ({
             eq: (_col: string, val: unknown) => {
               const row = payuTransactions.get(String(val));
-              if (row) Object.assign(row, fields);
+              if (row) Object.assign(row, fields, { updated_at: new Date().toISOString() });
               return { data: row ? [row] : [], error: null };
             },
           }),
@@ -265,6 +281,12 @@ function makeSupabase(options?: {
         };
       }
       if (table === "payu_webhook_events") {
+        const listEvents = () =>
+          Array.from(payuEvents.values()).sort((a, b) => {
+            const aTs = typeof a.event_created === "number" ? a.event_created : 0;
+            const bTs = typeof b.event_created === "number" ? b.event_created : 0;
+            return bTs - aTs;
+          });
         return {
           select: () => ({
             eq: (_col: string, val: unknown) => ({
@@ -273,10 +295,16 @@ function makeSupabase(options?: {
                 error: null,
               }),
             }),
+            order: () => ({
+              limit: async (n: number) => ({ data: listEvents().slice(0, n), error: null }),
+            }),
           }),
           insert: (rows: Array<PayUWebhookRow> | PayUWebhookRow) => {
             const list = Array.isArray(rows) ? rows : [rows];
-            const row = list[0];
+            const row = {
+              event_created: Math.floor(Date.now() / 1000),
+              ...list[0],
+            };
             return {
               select: () => {
                 const runner = async () => {
@@ -1046,6 +1074,65 @@ describe("cap enforcement upgrade path", () => {
     expect(json.error.upgrade_required).toBe(true);
     expect(json.error.effective_plan).toBe("free");
     expect(typeof json.error.expired_at).toBe("string");
+  });
+});
+
+describe("admin billing health", () => {
+  it("returns PayU config/db probe and recent billing rows without exposing secrets", async () => {
+    const supabase = makeSupabase();
+    const now = new Date().toISOString();
+    const txnInsert = supabase.from("payu_transactions").insert({
+      txn_id: "txn_health_1",
+      workspace_id: "ws1",
+      plan_code: "pro",
+      amount: "49.00",
+      currency: "INR",
+      status: "success",
+      verify_status: "success",
+      updated_at: now,
+    });
+    expect(txnInsert.error).toBeNull();
+
+    const webhookInsert = await supabase
+      .from("payu_webhook_events")
+      .insert({
+        event_id: "mih_health_1",
+        status: "processed",
+        payu_status: "success",
+        event_created: Math.floor(Date.now() / 1000),
+      })
+      .select()
+      .single();
+    expect(webhookInsert.error).toBeNull();
+
+    const res = await handleAdminBillingHealth(
+      new Request("http://localhost/v1/admin/billing/health", {
+        method: "GET",
+        headers: { "x-admin-token": "admin" },
+      }),
+      makeEnv({ MASTER_ADMIN_TOKEN: "admin", PAYU_VERIFY_URL: "https://info.payu.in/merchant/postservice?form=2" }),
+      supabase as SupabaseClient,
+    );
+
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.payu_verify.configured).toBe(true);
+    expect(json.payu_verify.host).toBe("info.payu.in");
+    expect(json.db_connectivity.ok).toBe(true);
+    expect(Array.isArray(json.payu_webhook_events.items)).toBe(true);
+    expect(Array.isArray(json.payu_transactions.items)).toBe(true);
+    expect(String(JSON.stringify(json))).not.toContain("payu_salt");
+    expect(String(JSON.stringify(json))).not.toContain("payu_key");
+  });
+
+  it("requires a valid admin token", async () => {
+    await expect(
+      handleAdminBillingHealth(
+        new Request("http://localhost/v1/admin/billing/health", { method: "GET" }),
+        makeEnv({ MASTER_ADMIN_TOKEN: "admin" }),
+        makeSupabase() as SupabaseClient,
+      ),
+    ).rejects.toMatchObject({ status: 401, code: "UNAUTHORIZED" });
   });
 });
 
