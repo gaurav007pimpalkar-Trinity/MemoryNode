@@ -133,8 +133,8 @@ It checks `/healthz`, validates authenticated usage/search/context paths, and ve
 
 ### Prod secrets (Cloudflare Workers)
 - Do **not** place secrets in `apps/api/wrangler.toml [vars]`; Cloudflare will overwrite dashboard secrets on deploy.
-- Set secrets with `wrangler secret put NAME`: `SUPABASE_SERVICE_ROLE_KEY`, `OPENAI_API_KEY`, `API_KEY_SALT`, `MASTER_ADMIN_TOKEN`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`.
-- Safe vars that can live in `[vars]`: `SUPABASE_URL`, `SUPABASE_MODE`, `EMBEDDINGS_MODE`, `ENVIRONMENT`, `RATE_LIMIT_MODE`, `ALLOWED_ORIGINS`, `PUBLIC_APP_URL`, Stripe price ids/paths.
+- Set secrets with `wrangler secret put NAME`: `SUPABASE_SERVICE_ROLE_KEY`, `OPENAI_API_KEY`, `API_KEY_SALT`, `MASTER_ADMIN_TOKEN`, `PAYU_MERCHANT_KEY`, `PAYU_MERCHANT_SALT`.
+- Safe vars that can live in `[vars]`: `SUPABASE_URL`, `SUPABASE_MODE`, `EMBEDDINGS_MODE`, `ENVIRONMENT`, `RATE_LIMIT_MODE`, `ALLOWED_ORIGINS`, `PUBLIC_APP_URL`, `PAYU_BASE_URL`, `PAYU_VERIFY_URL`, `PAYU_SUCCESS_PATH`, `PAYU_CANCEL_PATH`, `PAYU_CURRENCY`.
 
 ### Security-related env vars
 - `ALLOWED_ORIGINS`: comma-separated allowed origins for CORS. If unset, CORS is not enabled. Use `*` to explicitly allow all.
@@ -144,54 +144,20 @@ It checks `/healthz`, validates authenticated usage/search/context paths, and ve
 - `AUDIT_IP_SALT`: salt used to hash IPs in audit logs.
 - `API_KEY_SALT`: prefer setting via environment in prod; the database `app_settings.api_key_salt` is a dev fallback. If both are present and differ, the Worker fails fast with `CONFIG_ERROR` to prevent mismatched key hashes.
 
-### Billing env vars (foundation)
-- Required for billing endpoints:
-  - `STRIPE_SECRET_KEY`
-  - `STRIPE_WEBHOOK_SECRET`
-  - `STRIPE_PRICE_PRO`
-  - `STRIPE_PRICE_TEAM`
-  - `PUBLIC_APP_URL` (used for return/cancel URLs)
-- Optional:
-  - `STRIPE_PORTAL_CONFIGURATION_ID`
-  - `STRIPE_SUCCESS_PATH` (default `/settings/billing?status=success`)
-  - `STRIPE_CANCEL_PATH` (default `/settings/billing?status=canceled`)
-  - `STRIPE_PRICE_TEAM` (required when selling Team plan)
-
-### Billing plan states
-- Stored on `workspaces`: `plan` (`free|pro|team`) and `plan_status` (`free|trialing|active|past_due|canceled`).
-- Effective caps: `active`/`trialing` → paid caps for the plan; `past_due`/`canceled`/`free` → free caps.
-
-### Billing endpoints
-- `GET /v1/billing/status` (API key auth) → `{ plan, plan_status, effective_plan, current_period_end, cancel_at_period_end }`
-- `POST /v1/billing/checkout` (API key auth) – creates Stripe Checkout session for the caller's workspace (customer auto-created if missing). Body supports `{ plan: "pro" | "team" }`.
-- `POST /v1/billing/portal` (API key auth) – opens Stripe Billing Portal (409 if no customer/checkout yet).
-- `POST /v1/billing/webhook` – Stripe webhook receiver (verify with `STRIPE_WEBHOOK_SECRET`); handle `customer.subscription.*` and `invoice.*` events.
-- Cap exceedances now return HTTP 402 with `error.code="CAP_EXCEEDED"`, `upgrade_required=true`, `effective_plan`, and `upgrade_url=${PUBLIC_APP_URL}/settings/billing`.
-- Checkout retries: clients may send `Idempotency-Key` on `/v1/billing/checkout`; the Worker forwards a stable idempotency key to Stripe to avoid duplicate sessions.
-
-### Stripe webhook setup
-- Endpoint: `/v1/billing/webhook`
-- Recommended events: `customer.subscription.created`, `.updated`, `.deleted`, `invoice.paid`, `invoice.payment_failed`
-- Customer metadata includes `workspace_id` so reconciliation can fall back if the Stripe customer link is missing.
-
-### Stripe Webhook Events
-- Endpoint path: `/v1/billing/webhook`
-- Required events: `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, `invoice.payment_failed`
-- The webhook verifies the Stripe signature against the raw request bytes with timestamp tolerance (default 300s); failures return 400 `invalid_webhook_signature`.
-- If no workspace is found for a customer/metadata, the webhook is stored as deferred and returns 202 with `error.code="webhook_deferred"` so it can be retried/reprocessed safely.
-
-### What to watch in logs (structured JSON, single line each)
-`request_completed` logs include: `event_name`, `route`, `method`, `status`, `duration_ms`, `request_id`, `workspace_id` (if known), and `error_code`/`error_message` when status is 4xx/5xx.
-Event-specific logs include `ts` and route-specific fields (for example redacted Stripe/workspace identifiers). No bodies/headers/Stripe objects are logged.
-
-| event_name | What it means | Likely causes | What to do | Example (redacted) |
-| --- | --- | --- | --- | --- |
-| `webhook_failed` | Webhook verification or processing failed. | Invalid signature, DB issues, schema drift, transient infra failures. | 1) Check `error_code` and `stripe_event_id`. 2) Fix root cause. 3) Re-send event from Stripe. | `{"event_name":"webhook_failed","status":400,"request_id":"req-123","error_code":"invalid_webhook_signature"}` |
-| `webhook_replayed` | Duplicate `event_id` received and skipped safely. | Stripe retry/replay, manual resend, network retries. | Usually no action; confirm original `webhook_processed` exists. | `{"event_name":"webhook_replayed","request_id":"req-124","stripe_event_id":"evt_123","event_type":"invoice.paid"}` |
-| `billing_webhook_signature_invalid` | Stripe webhook signature check failed; event ignored. | Wrong `STRIPE_WEBHOOK_SECRET`, hitting wrong endpoint URL, proxy altering body. | 1) Verify env `STRIPE_WEBHOOK_SECRET` matches Stripe dashboard. 2) Confirm endpoint path `/v1/billing/webhook`. 3) Ensure webhook sends raw body (no middleware altering). | `{"event_name":"billing_webhook_signature_invalid","ts":"2026-02-01T12:00:00Z","route":"/v1/billing/webhook","method":"POST","status":400,"request_id":"req-123"}` |
-| `billing_webhook_workspace_not_found` | Webhook event couldn’t map customer to a workspace. | Customer created outside our checkout flow; missing `stripe_customer_id` in DB; metadata.workspace_id absent/mismatched. | 1) Search Stripe customer ID in DB `workspaces.stripe_customer_id`. 2) If missing, backfill the mapping to the correct workspace. 3) Re-send the Stripe event from dashboard or run deferred reprocess. | `{"event_name":"billing_webhook_workspace_not_found","ts":"2026-02-01T12:00:01Z","route":"/v1/billing/webhook","method":"POST","status":202,"request_id":"req-raw","customer_id_redacted":"cus_***","workspace_id_redacted":"ws_***"}` |
-| `cap_exceeded` | Request blocked due to daily caps, using effective plan. | User legitimately hit limits; plan_status past_due/canceled falling back to free caps; caps set too low. | 1) Check `effective_plan` and `plan_status` in log. 2) If paid user, inspect billing state; if past_due, prompt payment. 3) If free plan, suggest upgrade. 4) If caps too low, adjust limits config. | `{"event_name":"cap_exceeded","ts":"2026-02-01T12:00:02Z","route":"/v1/search","method":"POST","status":402,"request_id":"req-789","workspace_id_redacted":"ws_***","effective_plan":"free","plan_status":"past_due"}` |
-| `billing_endpoint_error` | Billing status/checkout/portal failed. | Stripe env vars missing/invalid; Stripe API error; DB error persisting customer id. | 1) Check `route` and `status` in log. 2) Verify Stripe env vars (`STRIPE_SECRET_KEY`, `STRIPE_PRICE_PRO`, `PUBLIC_APP_URL`, portal config). 3) Retry the call; if persistent, check Stripe dashboard logs for the request_id. | `{"event_name":"billing_endpoint_error","ts":"2026-02-01T12:00:03Z","route":"/v1/billing/portal","method":"POST","status":409,"request_id":"req-456","workspace_id_redacted":"ws_***"}` |
+### Billing (PayU only)
+- Required billing env vars: `PAYU_MERCHANT_KEY`, `PAYU_MERCHANT_SALT`, `PAYU_BASE_URL`, `PAYU_VERIFY_URL`, `PUBLIC_APP_URL` (plus `PAYU_SUCCESS_PATH`/`PAYU_CANCEL_PATH` if overriding defaults).
+- API endpoints:
+  - `GET /v1/billing/status` (API key auth) → `{ plan, plan_status, effective_plan, current_period_end, cancel_at_period_end }`
+  - `POST /v1/billing/checkout` (API key auth) → PayU hosted checkout payload (platform-only plans)
+  - `POST /v1/billing/portal` → always `410 GONE`
+  - `POST /v1/billing/webhook` → PayU callback receiver
+- Verify-before-grant invariant:
+  - Webhook/callback fields alone never grant access.
+  - Entitlements are granted only after PayU verify API confirms matching `txnid`, amount, currency, and success status.
+- Idempotency invariant:
+  - Duplicate webhook `event_id` is replay-safe via `payu_webhook_events`.
+  - Entitlement grant is one-per-txn via unique `workspace_entitlements.source_txn_id`.
+- Entitlements drive quota enforcement on quota-consuming routes (`/v1/memories`, `/v1/search`, `/v1/context`) and expired entitlements return `ENTITLEMENT_EXPIRED` (HTTP 402).
 
 ### Export / Import
 - `POST /v1/export`
@@ -199,10 +165,6 @@ Event-specific logs include `ts` and route-specific fields (for example redacted
   - Binary: set `Accept: application/zip` **or** `?format=zip` to receive a ZIP payload with `Content-Type: application/zip` and a download filename `memorynode-export-<workspace>-<yyyy-mm-dd>.zip`.
   - Both modes enforce `MAX_EXPORT_BYTES` and return 413 on overflow.
 - `POST /v1/import` accepts `{ artifact_base64, mode? }` and restores memories/chunks for the authenticated workspace only. `mode` defaults to non-destructive `upsert`; see API docs for other modes.
-
-### Billing status API
-- `GET /v1/billing/status` (API key auth) → `{ plan, plan_status, current_period_end, cancel_at_period_end }`
-- No Stripe calls yet; values come from `workspaces` billing columns.
 
 ## Database Setup (Supabase)
 1) Set `SUPABASE_DB_URL` (or `DATABASE_URL`) for your target database.
@@ -278,7 +240,7 @@ See `infra/sql/verify_rls.sql` for an automated checklist.
   ```bash
   DATABASE_URL=postgres://USER:PASSWORD@HOST:5432/DB?sslmode=require pnpm db:verify-schema
   ```
-- This executes `infra/sql/verify_schema.sql` and fails if critical schema objects are missing (`workspaces`, `api_keys`, `memories`, `workspace_members`, `usage_daily`, `product_events`, `stripe_webhook_events`, and key RPCs).
+- This executes `infra/sql/verify_schema.sql` and fails if critical schema objects are missing (`workspaces`, `api_keys`, `memories`, `workspace_members`, `usage_daily`, `product_events`, `payu_webhook_events`, `payu_transactions`, `workspace_entitlements`, and key RPCs).
 
 > Note: user_metadata claims are user-editable. Policies enforce membership in `workspace_members` so spoofed claims cannot break isolation.
 

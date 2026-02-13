@@ -78,3 +78,75 @@ If `DEPLOY_CONFIRM` is missing/wrong, it refuses to run before touching anything
 - List deployments: `pnpm -C apps/api wrangler deployments --env production`
 - Redeploy previous hash: `pnpm -C apps/api wrangler deploy --env production --hash <deployment-id>`
 - If DB migration caused issues, restore from backup (see BACKUP_RESTORE.md) and rerun `pnpm db:migrate`.
+
+---
+
+## PayU Go-Live Runbook
+
+### Exact env vars required
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `SUPABASE_DB_URL` (or `DATABASE_URL`)
+- `API_KEY_SALT`
+- `MASTER_ADMIN_TOKEN`
+- `BASE_URL`
+- `MEMORYNODE_API_KEY`
+- `PAYU_MERCHANT_KEY`
+- `PAYU_MERCHANT_SALT`
+- `PAYU_BASE_URL`
+- `PAYU_VERIFY_URL`
+- `PAYU_VERIFY_TIMEOUT_MS`
+- `PAYU_CURRENCY`
+- `PAYU_PRO_AMOUNT`
+- `PAYU_PRODUCT_INFO`
+- `PUBLIC_APP_URL`
+- `PAYU_SUCCESS_PATH`
+- `PAYU_CANCEL_PATH`
+- `BILLING_WEBHOOKS_ENABLED`
+- `BILLING_RECONCILE_ON_AMBIGUITY`
+
+### Cloudflare deploy steps
+1. Run release checks:
+   - `pnpm release:gate:full`
+2. Deploy Worker:
+   - Staging: `pnpm -C apps/api wrangler deploy --env staging`
+   - Production: `pnpm -C apps/api wrangler deploy --env production`
+3. Confirm health:
+   - `curl -sS \"$BASE_URL/healthz\"`
+
+### Supabase migration apply steps
+1. Apply schema changes:
+   - `SUPABASE_DB_URL=postgres://... pnpm db:migrate`
+2. Verify RLS + schema:
+   - `SUPABASE_DB_URL=postgres://... pnpm db:verify-rls`
+   - `SUPABASE_DB_URL=postgres://... pnpm db:verify-schema`
+3. Confirm migration manifest:
+   - `pnpm migrations:list`
+
+### Validate after deploy
+1. Billing status endpoint:
+   - `curl -sS -H \"Authorization: Bearer $MEMORYNODE_API_KEY\" \"$BASE_URL/v1/billing/status\"`
+   - Check `plan`, `plan_status`, `effective_plan`.
+2. Run smoke:
+   - `pnpm payu:smoke`
+3. Run one test payment in PayU staging only:
+   - Use staging merchant credentials and staging callback URLs.
+   - Confirm callback hits `/v1/billing/webhook` and `plan_status` becomes `active` for the test workspace.
+
+### Reprocess PayU webhook events
+- Reprocess deferred events:
+  - `curl -sS -X POST -H \"x-admin-token: $MASTER_ADMIN_TOKEN\" \"$BASE_URL/admin/webhooks/reprocess?status=deferred&limit=50\"`
+- Reprocess failed events:
+  - `curl -sS -X POST -H \"x-admin-token: $MASTER_ADMIN_TOKEN\" \"$BASE_URL/admin/webhooks/reprocess?status=failed&limit=50\"`
+- Inspect billing diagnostic:
+  - `curl -sS -H \"x-admin-token: $MASTER_ADMIN_TOKEN\" \"$BASE_URL/v1/admin/billing/health\"`
+
+### Rollback options (PayU-specific)
+1. Disable billing checks gate quickly (webhook processing):
+   - Set `BILLING_WEBHOOKS_ENABLED=0` in Worker env and redeploy.
+2. Redeploy previous Worker build:
+   - `pnpm -C apps/api wrangler deployments --env <stage>`
+   - `pnpm -C apps/api wrangler deploy --env <stage> --hash <deployment-id>`
+3. Revert to last known-good entitlement (manual SQL, controlled change):
+   - Mark current row inactive and re-activate prior row in `workspace_entitlements` for affected workspace.
+   - Keep `source_txn_id` uniqueness intact; do not create duplicate entitlement rows for same txn.
