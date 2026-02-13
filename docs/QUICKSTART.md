@@ -64,7 +64,7 @@ Print the exact ordered migration manifest from filesystem:
 pnpm migrations:list
 ```
 
-Migration manifest (CI-checked): `MIGRATIONS_TOTAL=23; MIGRATIONS_LATEST=021_payu_billing.sql`
+Migration manifest (CI-checked): `MIGRATIONS_TOTAL=24; MIGRATIONS_LATEST=022_payu_transactions_entitlements.sql`
 
 ## 4) Run the API locally
 ```bash

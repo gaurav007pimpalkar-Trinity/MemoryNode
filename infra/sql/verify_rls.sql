@@ -11,7 +11,9 @@ with required_tables(relname) as (
     ('api_keys'),
     ('memories'),
     ('memory_chunks'),
+    ('payu_transactions'),
     ('usage_daily'),
+    ('workspace_entitlements'),
     ('workspaces')
 ),
 table_state as (

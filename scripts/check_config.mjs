@@ -84,6 +84,7 @@ function hasBillingConfigSignals() {
     "PAYU_MERCHANT_KEY",
     "PAYU_MERCHANT_SALT",
     "PAYU_BASE_URL",
+    "PAYU_VERIFY_URL",
     "PUBLIC_APP_URL",
     "PAYU_SUCCESS_PATH",
     "PAYU_CANCEL_PATH",
@@ -139,6 +140,7 @@ if (strictStage) {
     requireVar(errors, "PAYU_MERCHANT_KEY", `${billingContext} Required for checkout field signing.`);
     requireVar(errors, "PAYU_MERCHANT_SALT", `${billingContext} Required for webhook/signature verification.`);
     requireVar(errors, "PAYU_BASE_URL", `${billingContext} Required for hosted PayU checkout endpoint.`);
+    requireVar(errors, "PAYU_VERIFY_URL", `${billingContext} Required for verify-before-grant webhook hardening.`);
     requireVar(errors, "PUBLIC_APP_URL", `${billingContext} Required to generate checkout callback URLs.`);
   } else {
     notes.push(

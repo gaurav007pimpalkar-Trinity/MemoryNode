@@ -31,6 +31,9 @@ export interface Env {
   PUBLIC_APP_URL?: string;
   PAYU_SUCCESS_PATH?: string;
   PAYU_CANCEL_PATH?: string;
+  PAYU_VERIFY_URL?: string;
+  PAYU_VERIFY_TIMEOUT_MS?: string;
+  PAYU_CURRENCY?: string;
   RATE_LIMIT_MODE?: string;
 }
 

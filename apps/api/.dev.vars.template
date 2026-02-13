@@ -15,6 +15,8 @@ ENVIRONMENT=dev
 RATE_LIMIT_MODE=on
 PUBLIC_APP_URL=http://localhost:5173
 PAYU_BASE_URL=https://secure.payu.in/_payment
+PAYU_VERIFY_URL=https://info.payu.in/merchant/postservice?form=2
+PAYU_CURRENCY=INR
 PAYU_PRO_AMOUNT=49.00
 PAYU_PRODUCT_INFO=MemoryNode Platform Pro
 PAYU_SUCCESS_PATH=/settings/billing?status=success

@@ -12,6 +12,8 @@ with required_tables(name) as (
     ('product_events'),
     ('stripe_webhook_events'),
     ('payu_webhook_events'),
+    ('payu_transactions'),
+    ('workspace_entitlements'),
     ('memorynode_migrations')
 ),
 missing_tables as (
@@ -62,7 +64,18 @@ required_columns(table_name, column_name) as (
     ('payu_webhook_events', 'event_created'),
     ('payu_webhook_events', 'processed_at'),
     ('payu_webhook_events', 'defer_reason'),
-    ('payu_webhook_events', 'txn_id')
+    ('payu_webhook_events', 'txn_id'),
+    ('payu_transactions', 'txn_id'),
+    ('payu_transactions', 'workspace_id'),
+    ('payu_transactions', 'amount'),
+    ('payu_transactions', 'currency'),
+    ('payu_transactions', 'status'),
+    ('workspace_entitlements', 'workspace_id'),
+    ('workspace_entitlements', 'source_txn_id'),
+    ('workspace_entitlements', 'plan_code'),
+    ('workspace_entitlements', 'status'),
+    ('workspace_entitlements', 'expires_at'),
+    ('workspace_entitlements', 'caps_json')
 ),
 missing_columns as (
   select rc.table_name, rc.column_name
