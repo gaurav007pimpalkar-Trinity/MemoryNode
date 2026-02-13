@@ -15,6 +15,7 @@
  */
 
 const { BASE_URL, PAYU_MERCHANT_KEY, PAYU_MERCHANT_SALT, MEMORYNODE_API_KEY } = process.env;
+const REQUEST_ID_PREFIX = (process.env.PAYU_SMOKE_REQUEST_ID_PREFIX ?? "payu-staging").trim() || "payu-staging";
 
 function requireEnv(name) {
   if (!process.env[name] || `${process.env[name]}`.trim() === "") {
@@ -22,12 +23,14 @@ function requireEnv(name) {
   }
 }
 
-async function request(method, path, body) {
+async function request(method, path, body, stepName) {
+  const requestId = `${REQUEST_ID_PREFIX}-${stepName}-${Date.now().toString(36)}`;
   const res = await fetch(`${BASE_URL}${path}`, {
     method,
     headers: {
       "content-type": "application/json",
       Authorization: `Bearer ${MEMORYNODE_API_KEY}`,
+      "x-request-id": requestId,
     },
     body: body ? JSON.stringify(body) : undefined,
   });
@@ -38,7 +41,7 @@ async function request(method, path, body) {
   } catch {
     // ignore
   }
-  return { status: res.status, ok: res.ok, text, json };
+  return { status: res.status, ok: res.ok, text, json, requestId: res.headers.get("x-request-id") ?? requestId };
 }
 
 async function main() {
@@ -49,24 +52,24 @@ async function main() {
 
   let pass = true;
 
-  const status = await request("GET", "/v1/billing/status");
+  const status = await request("GET", "/v1/billing/status", undefined, "status");
   const statusOk = status.ok && status.json && typeof status.json.plan === "string";
-  console.log(`[status] ${statusOk ? "PASS" : "FAIL"} ${status.status}`);
+  console.log(`[${statusOk ? "PASS" : "FAIL"}] status request_id=${status.requestId} status=${status.status}`);
   pass &&= Boolean(statusOk);
 
-  const checkout = await request("POST", "/v1/billing/checkout", {});
+  const checkout = await request("POST", "/v1/billing/checkout", {}, "checkout");
   const checkoutOk =
     checkout.ok &&
     checkout.json?.provider === "payu" &&
     checkout.json?.method === "POST" &&
     typeof checkout.json?.url === "string" &&
     typeof checkout.json?.fields?.hash === "string";
-  console.log(`[checkout] ${checkoutOk ? "PASS" : "FAIL"} ${checkout.status}`);
+  console.log(`[${checkoutOk ? "PASS" : "FAIL"}] checkout request_id=${checkout.requestId} status=${checkout.status}`);
   pass &&= Boolean(checkoutOk);
 
-  const portal = await request("POST", "/v1/billing/portal", {});
+  const portal = await request("POST", "/v1/billing/portal", {}, "portal");
   const portalOk = portal.status === 410 && portal.json?.error?.code === "GONE";
-  console.log(`[portal gone] ${portalOk ? "PASS" : "FAIL"} ${portal.status}`);
+  console.log(`[${portalOk ? "PASS" : "FAIL"}] portal_gone request_id=${portal.requestId} status=${portal.status}`);
   pass &&= Boolean(portalOk);
 
   console.log(`PayU staging smoke: ${pass ? "PASS" : "FAIL"}`);

@@ -14,6 +14,7 @@
 import crypto from "node:crypto";
 
 const { BASE_URL, PAYU_MERCHANT_KEY, PAYU_MERCHANT_SALT, MEMORYNODE_API_KEY } = process.env;
+const REQUEST_ID_PREFIX = (process.env.PAYU_SMOKE_REQUEST_ID_PREFIX ?? "payu-webhook").trim() || "payu-webhook";
 
 function requireEnv(name) {
   if (!process.env[name] || `${process.env[name]}`.trim() === "") {
@@ -32,10 +33,16 @@ function makePayload(eventId) {
     firstname: "MemoryNode",
     email: "ws1@example.com",
     udf1: "ws1",
+    udf2: "",
+    udf3: "",
+    udf4: "",
+    udf5: "",
   };
 }
 
 function signPayload(payload) {
+  // PayU reverse hash sequence:
+  // SALT|status||||||udf5|udf4|udf3|udf2|udf1|email|firstname|productinfo|amount|txnid|key
   const sequence = [
     PAYU_MERCHANT_SALT,
     payload.status,
@@ -43,12 +50,11 @@ function signPayload(payload) {
     "",
     "",
     "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    payload.udf1,
+    payload.udf5 ?? "",
+    payload.udf4 ?? "",
+    payload.udf3 ?? "",
+    payload.udf2 ?? "",
+    payload.udf1 ?? "",
     payload.email,
     payload.firstname,
     payload.productinfo,
@@ -60,8 +66,10 @@ function signPayload(payload) {
 }
 
 async function postWebhook(payload) {
+  const requestId = `${REQUEST_ID_PREFIX}-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 6)}`;
   const headers = { "content-type": "application/json" };
   if (MEMORYNODE_API_KEY) headers.Authorization = `Bearer ${MEMORYNODE_API_KEY}`;
+  headers["x-request-id"] = requestId;
 
   const res = await fetch(`${BASE_URL}/v1/billing/webhook`, {
     method: "POST",
@@ -70,7 +78,12 @@ async function postWebhook(payload) {
   });
 
   const text = await res.text();
-  return { ok: res.ok, status: res.status, text };
+  return {
+    ok: res.ok,
+    status: res.status,
+    text,
+    requestId: res.headers.get("x-request-id") ?? requestId,
+  };
 }
 
 async function main() {
@@ -85,13 +98,13 @@ async function main() {
   const invalidPayload = { ...validPayload, hash: "invalid" };
 
   const invalid = await postWebhook(invalidPayload);
-  console.log(`[webhook invalid sig] ${invalid.ok ? "FAIL" : "PASS"} status=${invalid.status}`);
+  console.log(`[${invalid.ok ? "FAIL" : "PASS"}] webhook_invalid_sig request_id=${invalid.requestId} status=${invalid.status}`);
 
   const first = await postWebhook(validPayload);
-  console.log(`[webhook valid sig first] ${first.ok ? "PASS" : "FAIL"} status=${first.status}`);
+  console.log(`[${first.ok ? "PASS" : "FAIL"}] webhook_valid_sig_first request_id=${first.requestId} status=${first.status}`);
 
   const replay = await postWebhook(validPayload);
-  console.log(`[webhook replay] ${replay.ok ? "PASS" : "FAIL"} status=${replay.status}`);
+  console.log(`[${replay.ok ? "PASS" : "FAIL"}] webhook_replay request_id=${replay.requestId} status=${replay.status}`);
 
   const pass = !invalid.ok && first.ok && replay.ok;
   console.log(`PayU webhook test: ${pass ? "PASS" : "FAIL"}`);
