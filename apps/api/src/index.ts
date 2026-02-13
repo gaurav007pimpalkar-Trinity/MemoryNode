@@ -44,6 +44,9 @@ interface Env {
   PUBLIC_APP_URL?: string;
   PAYU_SUCCESS_PATH?: string;
   PAYU_CANCEL_PATH?: string;
+  PAYU_VERIFY_URL?: string;
+  PAYU_VERIFY_TIMEOUT_MS?: string;
+  PAYU_CURRENCY?: string;
 }
 
 interface ApiError {
@@ -87,6 +90,10 @@ type PayUWebhookPayload = {
   email?: string;
   udf1?: string;
   udf2?: string;
+  udf3?: string;
+  udf4?: string;
+  udf5?: string;
+  currency?: string;
   addedon?: string;
   [key: string]: unknown;
 };
@@ -156,7 +163,19 @@ const DEFAULT_SUCCESS_PATH = "/settings/billing?status=success";
 const DEFAULT_CANCEL_PATH = "/settings/billing?status=canceled";
 const DEFAULT_PAYU_PRO_AMOUNT = "49.00";
 const DEFAULT_PAYU_PRODUCT_INFO = "MemoryNode Platform Pro";
+const DEFAULT_PAYU_CURRENCY = "INR";
+const DEFAULT_PAYU_VERIFY_URL = "https://info.payu.in/merchant/postservice?form=2";
+const DEFAULT_PAYU_VERIFY_TIMEOUT_MS = 10_000;
 const DEFAULT_WEBHOOK_REPROCESS_LIMIT = 50;
+
+const ENTITLEMENT_DURATION_DAYS: Record<string, number | null> = {
+  launch: 7,
+  build: 30,
+  deploy: 30,
+  scale: 30,
+  scale_plus: null,
+  pro: 30,
+};
 let requestCorsHeaders: Record<string, string> = {};
 let securityHeaders: Record<string, string> = {};
 let requestIdHeaderValue = "";
@@ -242,6 +261,7 @@ function assertPayUEnvFor(path: string, env: Env): void {
   if (!env.PAYU_MERCHANT_SALT) missing.push("PAYU_MERCHANT_SALT");
   if (!env.PAYU_BASE_URL) missing.push("PAYU_BASE_URL");
   if (!env.PUBLIC_APP_URL) missing.push("PUBLIC_APP_URL");
+  if (path === "/v1/billing/webhook" && !env.PAYU_VERIFY_URL) missing.push("PAYU_VERIFY_URL");
   if (missing.length) {
     throw createHttpError(500, "CONFIG_ERROR", `Missing PayU configuration: ${missing.join(", ")}`);
   }
@@ -259,11 +279,6 @@ function normalizePayUStatus(status: string | null | undefined): "success" | "pe
   return "failure";
 }
 
-function planFromPayUStatus(status: "success" | "pending" | "failure" | "canceled"): AuthContext["plan"] {
-  if (status === "success") return "pro";
-  return "free";
-}
-
 function planStatusFromPayUStatus(status: "success" | "pending" | "failure" | "canceled"): AuthContext["planStatus"] {
   if (status === "success") return "active";
   if (status === "pending") return "past_due";
@@ -277,10 +292,33 @@ function normalizeMoneyString(raw: string | undefined): string {
   return parsed.toFixed(2);
 }
 
+function normalizeCurrency(raw: string | undefined): string {
+  const normalized = (raw ?? DEFAULT_PAYU_CURRENCY).trim().toUpperCase();
+  return normalized || DEFAULT_PAYU_CURRENCY;
+}
+
 function paymentPeriodEndFromStatus(status: "success" | "pending" | "failure" | "canceled"): string | null {
   if (status !== "success") return null;
   const next = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
   return next.toISOString();
+}
+
+function resolveEntitlementExpiry(planCode: string, now = new Date()): string | null {
+  const durationDays = ENTITLEMENT_DURATION_DAYS[planCode] ?? 30;
+  if (durationDays === null) return null;
+  return new Date(now.getTime() + durationDays * 24 * 60 * 60 * 1000).toISOString();
+}
+
+function resolveEntitlementPlanCode(raw: string | null | undefined): string {
+  const normalized = (raw ?? "").trim().toLowerCase();
+  if (!normalized) return "pro";
+  if (normalized === "launch") return "launch";
+  if (normalized === "build") return "build";
+  if (normalized === "deploy") return "deploy";
+  if (normalized === "scale") return "scale";
+  if (normalized === "scale+" || normalized === "scale_plus") return "scale_plus";
+  if (normalized === "pro") return "pro";
+  return "pro";
 }
 
 function normalizePayUBaseUrl(raw: string): string {
@@ -313,30 +351,75 @@ function parsePayUEventCreated(raw: unknown): number {
   return Math.floor(Date.now() / 1000);
 }
 
-function payUHashReverseSequence(payload: PayUWebhookPayload, env: Env): string {
+type PayURequestHashFields = {
+  key: string;
+  txnid: string;
+  amount: string;
+  productinfo: string;
+  firstname: string;
+  email: string;
+  udf1?: string;
+  udf2?: string;
+  udf3?: string;
+  udf4?: string;
+  udf5?: string;
+  salt: string;
+};
+
+function payURequestHashSequence(fields: PayURequestHashFields): string {
   return [
-    env.PAYU_MERCHANT_SALT!,
+    fields.key,
+    fields.txnid,
+    fields.amount,
+    fields.productinfo,
+    fields.firstname,
+    fields.email,
+    fields.udf1 ?? "",
+    fields.udf2 ?? "",
+    fields.udf3 ?? "",
+    fields.udf4 ?? "",
+    fields.udf5 ?? "",
+    "",
+    "",
+    "",
+    "",
+    "",
+    fields.salt,
+  ].join("|");
+}
+
+function payUHashReverseSequence(payload: PayUWebhookPayload, env: Pick<Env, "PAYU_MERCHANT_SALT" | "PAYU_MERCHANT_KEY">): string {
+  return [
+    env.PAYU_MERCHANT_SALT ?? "",
     payload.status ?? "",
     "",
     "",
     "",
     "",
     "",
-    "",
-    "",
-    "",
-    "",
+    payload.udf5 ?? "",
+    payload.udf4 ?? "",
+    payload.udf3 ?? "",
+    payload.udf2 ?? "",
     payload.udf1 ?? "",
     payload.email ?? "",
     payload.firstname ?? "",
     payload.productinfo ?? "",
     payload.amount ?? "",
     payload.txnid ?? "",
-    env.PAYU_MERCHANT_KEY!,
+    env.PAYU_MERCHANT_KEY ?? "",
   ].join("|");
 }
 
-async function computeSha512Hex(input: string): Promise<string> {
+export function buildPayURequestHashInput(fields: PayURequestHashFields): string {
+  return payURequestHashSequence(fields);
+}
+
+export function buildPayUResponseReverseHashInput(payload: PayUWebhookPayload, env: Pick<Env, "PAYU_MERCHANT_SALT" | "PAYU_MERCHANT_KEY">): string {
+  return payUHashReverseSequence(payload, env);
+}
+
+export async function computeSha512Hex(input: string): Promise<string> {
   const data = new TextEncoder().encode(input);
   const digest = await crypto.subtle.digest("SHA-512", data);
   return Array.from(new Uint8Array(digest))
@@ -373,7 +456,7 @@ async function isPayUWebhookSignatureValid(
   const merchantKey = asNonEmptyString(payload.key);
   if (merchantKey && merchantKey !== env.PAYU_MERCHANT_KEY) return false;
 
-  const reverse = payUHashReverseSequence(payload, env);
+  const reverse = buildPayUResponseReverseHashInput(payload, env);
   const expected = normalizePayUHash(await computeSha512Hex(reverse));
   if (expected === received) return true;
 
@@ -391,6 +474,419 @@ async function isPayUWebhookSignatureValid(
   }
 
   return false;
+}
+
+type PayUTransactionStatus =
+  | "created"
+  | "initiated"
+  | "verify_failed"
+  | "verified"
+  | "success"
+  | "failed"
+  | "canceled"
+  | "pending";
+
+type PayUTransactionRow = {
+  txn_id: string;
+  workspace_id: string;
+  plan_code: string;
+  amount: number | string;
+  currency: string;
+  status: PayUTransactionStatus;
+  payu_payment_id?: string | null;
+};
+
+type PayUVerifyResponse = {
+  ok: boolean;
+  status: "success" | "pending" | "failure" | "canceled";
+  statusRaw: string;
+  txnId: string;
+  paymentId: string | null;
+  amount: string;
+  currency: string;
+  payload: Record<string, unknown>;
+};
+
+type QuotaResolution = {
+  caps: UsageSnapshot;
+  effectivePlan: AuthContext["plan"];
+  planStatus: AuthContext["planStatus"];
+  blocked: false;
+} | {
+  caps: UsageSnapshot;
+  effectivePlan: AuthContext["plan"];
+  planStatus: AuthContext["planStatus"];
+  blocked: true;
+  errorCode: "ENTITLEMENT_EXPIRED";
+  message: string;
+  expiredAt: string | null;
+};
+
+function normalizePayUTxnStatus(raw: string | null | undefined): PayUTransactionStatus {
+  const normalized = (raw ?? "").trim().toLowerCase();
+  if (normalized === "created") return "created";
+  if (normalized === "initiated") return "initiated";
+  if (normalized === "verify_failed") return "verify_failed";
+  if (normalized === "verified") return "verified";
+  if (normalized === "success") return "success";
+  if (normalized === "failed") return "failed";
+  if (normalized === "canceled") return "canceled";
+  if (normalized === "pending") return "pending";
+  return "created";
+}
+
+function payUTxnStatusRank(status: PayUTransactionStatus): number {
+  switch (status) {
+    case "created":
+      return 10;
+    case "initiated":
+      return 20;
+    case "verify_failed":
+      return 30;
+    case "pending":
+      return 35;
+    case "verified":
+      return 40;
+    case "success":
+      return 50;
+    case "failed":
+      return 60;
+    case "canceled":
+      return 60;
+    default:
+      return 0;
+  }
+}
+
+function canTransitionPayUTxnStatus(current: PayUTransactionStatus, next: PayUTransactionStatus): boolean {
+  if (current === "success" && next !== "success") return false;
+  if (current === "failed" && next !== "failed") return false;
+  if (current === "canceled" && next !== "canceled") return false;
+  return payUTxnStatusRank(next) >= payUTxnStatusRank(current);
+}
+
+function payUStatusFromTxnStatus(status: PayUTransactionStatus): "success" | "pending" | "failure" | "canceled" {
+  if (status === "success" || status === "verified") return "success";
+  if (status === "pending") return "pending";
+  if (status === "canceled") return "canceled";
+  return "failure";
+}
+
+function formatAmountStrict(raw: unknown): string {
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) return "0.00";
+  return value.toFixed(2);
+}
+
+function authPlanFromEntitlement(planCode: string): AuthContext["plan"] {
+  return planCode === "free" ? "free" : "pro";
+}
+
+function normalizeUsageCaps(raw: unknown): UsageSnapshot | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const writes = Number((raw as Record<string, unknown>).writes);
+  const reads = Number((raw as Record<string, unknown>).reads);
+  const embeds = Number((raw as Record<string, unknown>).embeds);
+  if (![writes, reads, embeds].every((v) => Number.isFinite(v) && v >= 0)) return null;
+  return {
+    writes: Math.floor(writes),
+    reads: Math.floor(reads),
+    embeds: Math.floor(embeds),
+  };
+}
+
+function resolveCapsByEntitlementPlan(planCode: string): UsageSnapshot {
+  const authPlan = authPlanFromEntitlement(resolveEntitlementPlanCode(planCode));
+  return capsByPlan[authPlan] ?? capsByPlan.free;
+}
+
+async function resolveQuotaForWorkspace(
+  auth: AuthContext,
+  supabase: SupabaseClient,
+): Promise<QuotaResolution> {
+  const fallbackCaps = capsByPlan[effectivePlan(auth.plan, auth.planStatus)] ?? capsByPlan.free;
+  const fallbackPlan = effectivePlan(auth.plan, auth.planStatus);
+  const fallbackStatus = auth.planStatus ?? "free";
+  const now = Date.now();
+  try {
+    const query = await supabase
+      .from("workspace_entitlements")
+      .select("plan_code,status,starts_at,expires_at,caps_json")
+      .eq("workspace_id", auth.workspaceId)
+      .order("created_at", { ascending: false })
+      .limit(25);
+    if (query.error) {
+      return {
+        caps: fallbackCaps,
+        effectivePlan: fallbackPlan,
+        planStatus: fallbackStatus,
+        blocked: false,
+      };
+    }
+    const rows = (query.data ?? []) as Array<{
+      plan_code?: string | null;
+      status?: string | null;
+      starts_at?: string | null;
+      expires_at?: string | null;
+      caps_json?: unknown;
+    }>;
+    if (rows.length === 0) {
+      return {
+        caps: fallbackCaps,
+        effectivePlan: fallbackPlan,
+        planStatus: fallbackStatus,
+        blocked: false,
+      };
+    }
+
+    const active = rows.find((row) => {
+      const status = (row.status ?? "").toLowerCase();
+      if (status !== "active") return false;
+      const startsAt = row.starts_at ? Date.parse(row.starts_at) : 0;
+      if (Number.isFinite(startsAt) && startsAt > now) return false;
+      const expiresAt = row.expires_at ? Date.parse(row.expires_at) : Number.POSITIVE_INFINITY;
+      return !Number.isFinite(expiresAt) || expiresAt > now;
+    });
+    if (active) {
+      const planCode = resolveEntitlementPlanCode(active.plan_code);
+      const caps = normalizeUsageCaps(active.caps_json) ?? resolveCapsByEntitlementPlan(planCode);
+      return {
+        caps,
+        effectivePlan: authPlanFromEntitlement(planCode),
+        planStatus: "active",
+        blocked: false,
+      };
+    }
+
+    const expired = rows.find((row) => {
+      const expiresAt = row.expires_at ? Date.parse(row.expires_at) : Number.NaN;
+      return Number.isFinite(expiresAt) && expiresAt <= now;
+    });
+    if (expired) {
+      return {
+        caps: fallbackCaps,
+        effectivePlan: "free",
+        planStatus: "canceled",
+        blocked: true,
+        errorCode: "ENTITLEMENT_EXPIRED",
+        message: "Active entitlement expired. Renew to continue quota-consuming API calls.",
+        expiredAt: expired.expires_at ?? null,
+      };
+    }
+  } catch {
+    // Best-effort compatibility with test stubs or pre-migration schemas.
+  }
+  return {
+    caps: fallbackCaps,
+    effectivePlan: fallbackPlan,
+    planStatus: fallbackStatus,
+    blocked: false,
+  };
+}
+
+async function fetchPayUTransactionByTxnId(
+  supabase: SupabaseClient,
+  txnId: string,
+): Promise<PayUTransactionRow | null> {
+  const row = await supabase
+    .from("payu_transactions")
+    .select("txn_id,workspace_id,plan_code,amount,currency,status,payu_payment_id")
+    .eq("txn_id", txnId)
+    .maybeSingle();
+  if (row.error) {
+    throw createHttpError(500, "DB_ERROR", row.error.message ?? "Failed to read PayU transaction");
+  }
+  return (row.data as PayUTransactionRow | null) ?? null;
+}
+
+async function transitionPayUTransactionStatus(
+  supabase: SupabaseClient,
+  txnId: string,
+  next: PayUTransactionStatus,
+  fields: {
+    paymentId?: string | null;
+    verifyStatus?: string | null;
+    verifyPayload?: Record<string, unknown> | null;
+    lastError?: string | null;
+    requestId?: string | null;
+  } = {},
+): Promise<PayUTransactionStatus> {
+  const current = await supabase
+    .from("payu_transactions")
+    .select("status")
+    .eq("txn_id", txnId)
+    .maybeSingle();
+  if (current.error) {
+    throw createHttpError(500, "DB_ERROR", current.error.message ?? "Failed to read transaction status");
+  }
+  const currentStatus = normalizePayUTxnStatus((current.data as { status?: string } | null)?.status);
+  if (!canTransitionPayUTxnStatus(currentStatus, next)) {
+    return currentStatus;
+  }
+  const payload: Record<string, unknown> = {
+    status: next,
+    updated_at: new Date().toISOString(),
+  };
+  if (fields.paymentId !== undefined) payload.payu_payment_id = fields.paymentId;
+  if (fields.verifyStatus !== undefined) payload.verify_status = fields.verifyStatus;
+  if (fields.verifyPayload !== undefined) payload.verify_payload = fields.verifyPayload;
+  if (fields.lastError !== undefined) payload.last_error = fields.lastError;
+  if (fields.requestId !== undefined) payload.request_id = fields.requestId;
+  if (fields.verifyStatus !== undefined || fields.verifyPayload !== undefined) {
+    payload.verify_checked_at = new Date().toISOString();
+  }
+
+  const updated = await supabase.from("payu_transactions").update(payload).eq("txn_id", txnId);
+  if (updated.error) {
+    throw createHttpError(500, "DB_ERROR", updated.error.message ?? "Failed to update transaction state");
+  }
+  return next;
+}
+
+function resolvePayUVerifyUrl(env: Env): string {
+  const raw = (env.PAYU_VERIFY_URL ?? DEFAULT_PAYU_VERIFY_URL).trim();
+  if (!raw) throw createHttpError(500, "CONFIG_ERROR", "PAYU_VERIFY_URL not set");
+  return raw;
+}
+
+function resolvePayUVerifyTimeoutMs(env: Env): number {
+  const parsed = Number(env.PAYU_VERIFY_TIMEOUT_MS ?? DEFAULT_PAYU_VERIFY_TIMEOUT_MS);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_PAYU_VERIFY_TIMEOUT_MS;
+  return Math.min(30_000, Math.max(1_000, Math.floor(parsed)));
+}
+
+function parsePayUVerifyTransactionDetails(payload: Record<string, unknown>, txnId: string): Record<string, unknown> | null {
+  const details = payload.transaction_details;
+  if (!details || typeof details !== "object" || Array.isArray(details)) return null;
+  const byTxn = (details as Record<string, unknown>)[txnId];
+  if (!byTxn || typeof byTxn !== "object" || Array.isArray(byTxn)) return null;
+  return byTxn as Record<string, unknown>;
+}
+
+async function verifyPayUTransactionViaApi(
+  env: Env,
+  txn: PayUTransactionRow,
+): Promise<PayUVerifyResponse> {
+  const command = "verify_payment";
+  const var1 = txn.txn_id;
+  const hashSeed = [env.PAYU_MERCHANT_KEY ?? "", command, var1, env.PAYU_MERCHANT_SALT ?? ""].join("|");
+  const verifyHash = await computeSha512Hex(hashSeed);
+  const body = new URLSearchParams({
+    key: env.PAYU_MERCHANT_KEY ?? "",
+    command,
+    var1,
+    hash: verifyHash,
+  });
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), resolvePayUVerifyTimeoutMs(env));
+  let response: Response;
+  try {
+    response = await fetch(resolvePayUVerifyUrl(env), {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    const message = redact((err as Error)?.message, "message");
+    throw createHttpError(502, "VERIFY_API_UNAVAILABLE", `PayU verify API unavailable: ${message}`);
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  if (!response.ok) {
+    throw createHttpError(502, "VERIFY_API_UNAVAILABLE", `PayU verify API failed with status ${response.status}`);
+  }
+
+  let payload: Record<string, unknown>;
+  try {
+    payload = (await response.json()) as Record<string, unknown>;
+  } catch {
+    throw createHttpError(502, "VERIFY_API_BAD_RESPONSE", "PayU verify API returned non-JSON payload");
+  }
+
+  const details = parsePayUVerifyTransactionDetails(payload, txn.txn_id);
+  if (!details) {
+    throw createHttpError(502, "VERIFY_API_BAD_RESPONSE", "PayU verify response missing transaction_details entry");
+  }
+
+  const verifyTxnId = asNonEmptyString(details.txnid) ?? txn.txn_id;
+  const amount = formatAmountStrict(details.amount ?? details.amt ?? details.net_amount_debit);
+  const currency = normalizeCurrency(asNonEmptyString(details.currency) ?? txn.currency);
+  const paymentId =
+    asNonEmptyString(details.mihpayid) ??
+    asNonEmptyString(details.payuMoneyId) ??
+    asNonEmptyString(details.payment_id) ??
+    null;
+  const statusRaw =
+    asNonEmptyString(details.unmappedstatus) ??
+    asNonEmptyString(details.status) ??
+    asNonEmptyString(details.field9) ??
+    "failure";
+  const status = normalizePayUStatus(statusRaw);
+  const approved = status === "success";
+  return {
+    ok: approved && verifyTxnId === txn.txn_id,
+    status,
+    statusRaw,
+    txnId: verifyTxnId,
+    paymentId,
+    amount,
+    currency,
+    payload,
+  };
+}
+
+async function upsertWorkspaceEntitlementFromTransaction(
+  supabase: SupabaseClient,
+  txn: PayUTransactionRow,
+  verify: PayUVerifyResponse,
+): Promise<void> {
+  const now = new Date();
+  const startsAt = now.toISOString();
+  const expiresAt = resolveEntitlementExpiry(resolveEntitlementPlanCode(txn.plan_code), now);
+  const planCode = resolveEntitlementPlanCode(txn.plan_code);
+  const caps = resolveCapsByEntitlementPlan(planCode);
+  const existing = await supabase
+    .from("workspace_entitlements")
+    .select("id")
+    .eq("source_txn_id", txn.txn_id)
+    .maybeSingle();
+  if (existing.error) {
+    throw createHttpError(500, "DB_ERROR", existing.error.message ?? "Failed to read entitlement");
+  }
+  const payload = {
+    workspace_id: txn.workspace_id,
+    source_txn_id: txn.txn_id,
+    plan_code: planCode,
+    status: "active",
+    starts_at: startsAt,
+    expires_at: expiresAt,
+    caps_json: caps,
+    metadata: {
+      payu_status: verify.status,
+      payu_status_raw: verify.statusRaw,
+      payu_payment_id: verify.paymentId,
+      amount: verify.amount,
+      currency: verify.currency,
+    },
+    updated_at: new Date().toISOString(),
+  };
+  if ((existing.data as { id?: number } | null)?.id) {
+    const updated = await supabase
+      .from("workspace_entitlements")
+      .update(payload)
+      .eq("id", (existing.data as { id: number }).id);
+    if (updated.error) {
+      throw createHttpError(500, "DB_ERROR", updated.error.message ?? "Failed to update entitlement");
+    }
+    return;
+  }
+  const inserted = await supabase.from("workspace_entitlements").insert(payload);
+  if (inserted.error) {
+    throw createHttpError(500, "DB_ERROR", inserted.error.message ?? "Failed to create entitlement");
+  }
 }
 
 function buildUpgradeUrl(env: Env): string {
@@ -415,6 +911,8 @@ function capExceededResponse(
   usage: UsageSnapshot,
   rateHeaders: Record<string, string> | undefined,
   env: Env,
+  effectivePlanOverride: AuthContext["plan"] = effectivePlan(auth.plan, auth.planStatus),
+  planStatusOverride: AuthContext["planStatus"] = auth.planStatus ?? "free",
   logCtx?: { requestId?: string; route?: string; method?: string },
 ): Response {
   emitEventLog("cap_exceeded", {
@@ -423,8 +921,8 @@ function capExceededResponse(
     status: 402,
     request_id: logCtx?.requestId ?? "",
     workspace_id_redacted: redact(auth.workspaceId, "workspace_id"),
-    effective_plan: effectivePlan(auth.plan, auth.planStatus),
-    plan_status: auth.planStatus ?? "free",
+    effective_plan: effectivePlanOverride,
+    plan_status: planStatusOverride,
   });
   return jsonResponse(
     {
@@ -432,7 +930,7 @@ function capExceededResponse(
         code: "CAP_EXCEEDED",
         message: "Daily usage limits exceeded",
         upgrade_required: true,
-        effective_plan: effectivePlan(auth.plan, auth.planStatus),
+        effective_plan: effectivePlanOverride,
         limits: caps,
         usage,
         upgrade_url: buildUpgradeUrl(env),
@@ -451,9 +949,26 @@ async function checkCapsAndMaybeRespond(
   env: Env,
   logCtx?: { requestId?: string; route?: string; method?: string },
 ): Promise<Response | null> {
+  const quota = await resolveQuotaForWorkspace(auth, supabase);
+  if (quota.blocked) {
+    return jsonResponse(
+      {
+        error: {
+          code: quota.errorCode,
+          message: quota.message,
+          upgrade_required: true,
+          effective_plan: "free",
+          upgrade_url: buildUpgradeUrl(env),
+          expired_at: quota.expiredAt,
+        },
+      },
+      402,
+      rateHeaders,
+    );
+  }
   const today = todayUtc();
   const usage = await getUsage(supabase, auth.workspaceId, today);
-  const caps = capsByPlan[effectivePlan(auth.plan, auth.planStatus)] ?? capsByPlan.free;
+  const caps = quota.caps;
   const tooMuch = exceedsCaps(caps, usage as UsageSnapshot, deltas);
   if (tooMuch) {
     void emitProductEvent(
@@ -465,12 +980,21 @@ async function checkCapsAndMaybeRespond(
         route: logCtx?.route,
         method: logCtx?.method,
         status: 402,
-        effectivePlan: effectivePlan(auth.plan, auth.planStatus),
-        planStatus: auth.planStatus,
+        effectivePlan: quota.effectivePlan,
+        planStatus: quota.planStatus,
       },
       {},
     );
-    return capExceededResponse(auth, caps, usage as UsageSnapshot, rateHeaders, env, logCtx);
+    return capExceededResponse(
+      auth,
+      caps,
+      usage as UsageSnapshot,
+      rateHeaders,
+      env,
+      quota.effectivePlan,
+      quota.planStatus,
+      logCtx,
+    );
   }
   return null;
 }
@@ -3088,14 +3612,16 @@ async function handleUsageToday(
 
   const day = todayUtc();
   const usage = await getUsage(supabase, auth.workspaceId, day);
-  const caps = capsByPlan[effectivePlan(auth.plan, auth.planStatus)] ?? capsByPlan.free;
+  const quota = await resolveQuotaForWorkspace(auth, supabase);
+  const caps = quota.caps;
+  const effectivePlanValue = quota.blocked ? "free" : quota.effectivePlan;
   return jsonResponse(
     {
       day,
       writes: usage.writes,
       reads: usage.reads,
       embeds: usage.embeds,
-      plan: auth.plan,
+      plan: effectivePlanValue,
       limits: caps,
     },
     200,
@@ -3214,8 +3740,56 @@ async function handleBillingCheckout(
   const workspaceHash = await shortHash(auth.workspaceId, 8);
   const idemHash = clientIdem ? await shortHash(clientIdem, 8) : "default1";
   const txnId = `mn${monthKey}${workspaceHash}${idemHash}`.slice(0, 40);
+  const planCode = resolveEntitlementPlanCode("pro");
+  const amount = normalizeMoneyString(env.PAYU_PRO_AMOUNT);
+  const currency = normalizeCurrency(env.PAYU_CURRENCY);
 
-  const updated = await supabase
+  const existingTxn = await fetchPayUTransactionByTxnId(supabase, txnId);
+  if (existingTxn) {
+    if (existingTxn.workspace_id !== auth.workspaceId) {
+      return jsonResponse(
+        { error: { code: "CONFLICT", message: "Existing transaction id belongs to a different workspace" } },
+        409,
+        rate.headers,
+      );
+    }
+    if (
+      formatAmountStrict(existingTxn.amount) !== amount ||
+      normalizeCurrency(existingTxn.currency) !== currency
+    ) {
+      return jsonResponse(
+        { error: { code: "CONFLICT", message: "Existing transaction metadata mismatch for idempotency key" } },
+        409,
+        rate.headers,
+      );
+    }
+  } else {
+    const createdTxn = await supabase.from("payu_transactions").insert({
+      txn_id: txnId,
+      workspace_id: auth.workspaceId,
+      plan_code: planCode,
+      amount,
+      currency,
+      status: "created",
+      request_id: requestId || null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    if (createdTxn.error) {
+      return jsonResponse(
+        { error: { code: "DB_ERROR", message: createdTxn.error.message ?? "Failed to create transaction row" } },
+        500,
+        rate.headers,
+      );
+    }
+  }
+
+  await transitionPayUTransactionStatus(supabase, txnId, "initiated", {
+    requestId: requestId || null,
+    lastError: null,
+  });
+
+  const updatedWorkspace = await supabase
     .from("workspaces")
     .update({
       billing_provider: "payu",
@@ -3223,7 +3797,7 @@ async function handleBillingCheckout(
       updated_at: new Date().toISOString(),
     })
     .eq("id", auth.workspaceId);
-  if (updated.error) {
+  if (updatedWorkspace.error) {
     emitEventLog("billing_endpoint_error", {
       route: "/v1/billing/checkout",
       method: "POST",
@@ -3232,7 +3806,7 @@ async function handleBillingCheckout(
       workspace_id_redacted: redact(auth.workspaceId, "workspace_id"),
     });
     return jsonResponse(
-      { error: { code: "DB_ERROR", message: updated.error.message ?? "Failed to persist PayU transaction id" } },
+      { error: { code: "DB_ERROR", message: updatedWorkspace.error.message ?? "Failed to persist PayU transaction id" } },
       500,
       rate.headers,
     );
@@ -3240,31 +3814,25 @@ async function handleBillingCheckout(
 
   const successUrl = new URL(env.PAYU_SUCCESS_PATH ?? DEFAULT_SUCCESS_PATH, env.PUBLIC_APP_URL!).toString();
   const cancelUrl = new URL(env.PAYU_CANCEL_PATH ?? DEFAULT_CANCEL_PATH, env.PUBLIC_APP_URL!).toString();
-  const amount = normalizeMoneyString(env.PAYU_PRO_AMOUNT);
   const productInfo = (env.PAYU_PRODUCT_INFO ?? DEFAULT_PAYU_PRODUCT_INFO).trim();
   const firstname = (parsedBody.ok ? parsedBody.data.firstname : undefined)?.trim() || "MemoryNode";
   const email = (parsedBody.ok ? parsedBody.data.email : undefined)?.trim() || `${auth.workspaceId}@payu.local`;
   const phone = (parsedBody.ok ? parsedBody.data.phone : undefined)?.trim() || "";
 
-  const hashInput = [
-    env.PAYU_MERCHANT_KEY!,
-    txnId,
+  const hashInput = buildPayURequestHashInput({
+    key: env.PAYU_MERCHANT_KEY!,
+    txnid: txnId,
     amount,
-    productInfo,
+    productinfo: productInfo,
     firstname,
     email,
-    auth.workspaceId,
-    "pro",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    "",
-    env.PAYU_MERCHANT_SALT!,
-  ].join("|");
+    udf1: auth.workspaceId,
+    udf2: planCode,
+    udf3: "",
+    udf4: "",
+    udf5: "",
+    salt: env.PAYU_MERCHANT_SALT!,
+  });
   const hash = await computeSha512Hex(hashInput);
 
   const checkoutFields = {
@@ -3275,11 +3843,15 @@ async function handleBillingCheckout(
     firstname,
     email,
     phone,
+    currency,
     surl: successUrl,
     furl: cancelUrl,
     hash,
     udf1: auth.workspaceId,
-    udf2: "pro",
+    udf2: planCode,
+    udf3: "",
+    udf4: "",
+    udf5: "",
   };
 
   void emitProductEvent(
@@ -3722,7 +4294,7 @@ async function findWorkspaceForPayUEvent(
 async function reconcilePayUWebhook(
   payload: PayUWebhookPayload,
   supabase: SupabaseClient,
-  _env: Env,
+  env: Env,
   requestId = "",
   forcedEventId?: string,
 ): Promise<PayUReconcileWebhookResult> {
@@ -3740,73 +4312,131 @@ async function reconcilePayUWebhook(
     };
   }
 
-  const payuStatus = normalizePayUStatus(payload.status);
   const txnId = asNonEmptyString(payload.txnid);
-  const paymentId = asNonEmptyString(payload.mihpayid);
-  const workspaceHint = asNonEmptyString(payload.udf1);
-  const workspaceId = await findWorkspaceForPayUEvent(supabase, workspaceHint, txnId);
+  if (!txnId) throw createHttpError(400, "BAD_REQUEST", "PayU payload missing txnid");
+
+  const txn = await fetchPayUTransactionByTxnId(supabase, txnId);
+  let paymentId = asNonEmptyString(payload.mihpayid);
+  let payuStatus = normalizePayUStatus(payload.status);
+  let workspaceId = txn?.workspace_id ?? null;
   let deferReason: string | null = null;
   let outcome: "processed" | "ignored_stale" | "deferred" = "processed";
 
   try {
-    if (!workspaceId) {
-      deferReason = "workspace_not_found";
+    if (!txn) {
+      deferReason = "transaction_not_found";
       outcome = "deferred";
     } else {
-      const currentRow = await supabase
-        .from("workspaces")
-        .select("plan_status,payu_last_event_created,payu_last_event_id")
-        .eq("id", workspaceId)
-        .maybeSingle();
-      if (currentRow.error) {
-        throw createHttpError(500, "DB_ERROR", currentRow.error.message ?? "Failed to read billing cursor");
-      }
-      const current = currentRow.data as
-        | {
-          plan_status?: string;
-          payu_last_event_created?: number | null;
-          payu_last_event_id?: string | null;
-        }
-        | null;
-      const shouldApply = shouldApplyPayUEvent(current?.payu_last_event_created, current?.payu_last_event_id, eventCreated, eventId);
-      if (!shouldApply) {
-        outcome = "ignored_stale";
+      const verified = await verifyPayUTransactionViaApi(env, txn);
+      payuStatus = verified.status;
+      paymentId = verified.paymentId ?? paymentId;
+      workspaceId = txn.workspace_id;
+
+      const amountMatches = verified.amount === formatAmountStrict(txn.amount);
+      const currencyMatches = normalizeCurrency(verified.currency) === normalizeCurrency(txn.currency);
+      const txnMatches = verified.txnId === txn.txn_id;
+      const verifiedSuccess = verified.ok && verified.status === "success" && amountMatches && currencyMatches && txnMatches;
+
+      if (!verifiedSuccess) {
+        const failureState: PayUTransactionStatus =
+          verified.status === "pending"
+            ? "pending"
+            : verified.status === "canceled"
+              ? "canceled"
+              : "verify_failed";
+        const txnState = await transitionPayUTransactionStatus(supabase, txn.txn_id, failureState, {
+          paymentId,
+          verifyStatus: verified.statusRaw,
+          verifyPayload: verified.payload,
+          lastError: txnMatches && amountMatches && currencyMatches
+            ? "verify_status_not_success"
+            : "verify_payload_mismatch",
+          requestId: requestId || null,
+        });
+        payuStatus = payUStatusFromTxnStatus(txnState);
       } else {
-        const plan = planFromPayUStatus(payuStatus);
-        const planStatus = planStatusFromPayUStatus(payuStatus);
-        const oldStatus = normalizePlanStatus(current?.plan_status);
-        const updatePayload = {
-          billing_provider: "payu",
-          payu_txn_id: txnId,
-          payu_payment_id: paymentId,
-          payu_last_status: payuStatus,
-          payu_last_plan: plan,
-          payu_last_event_id: eventId,
-          payu_last_event_created: eventCreated,
-          plan,
-          plan_status: planStatus,
-          current_period_end: paymentPeriodEndFromStatus(payuStatus),
-          cancel_at_period_end: false,
-          updated_at: new Date().toISOString(),
-        };
-        const updated = await supabase.from("workspaces").update(updatePayload).eq("id", workspaceId);
-        if (updated.error) {
-          throw createHttpError(500, "DB_ERROR", updated.error.message ?? "Failed to update PayU billing state");
+        const verifiedState = await transitionPayUTransactionStatus(supabase, txn.txn_id, "verified", {
+          paymentId,
+          verifyStatus: verified.statusRaw,
+          verifyPayload: verified.payload,
+          lastError: null,
+          requestId: requestId || null,
+        });
+        const successState = await transitionPayUTransactionStatus(supabase, txn.txn_id, "success", {
+          paymentId,
+          verifyStatus: verified.statusRaw,
+          verifyPayload: verified.payload,
+          lastError: null,
+          requestId: requestId || null,
+        });
+        payuStatus = payUStatusFromTxnStatus(successState);
+        if (verifiedState === "verified" && successState === "success") {
+          await upsertWorkspaceEntitlementFromTransaction(supabase, txn, verified);
         }
-        if ((planStatus === "active" || planStatus === "trialing") && !(oldStatus === "active" || oldStatus === "trialing")) {
-          void emitProductEvent(
-            supabase,
-            "upgrade_activated",
-            {
-              workspaceId,
-              requestId,
-              route: "/v1/billing/webhook",
-              method: "POST",
-              status: 200,
-              effectivePlan: plan,
-              planStatus,
-            },
-          );
+      }
+
+      const workspaceHint = workspaceId;
+      workspaceId = await findWorkspaceForPayUEvent(supabase, workspaceHint, txnId);
+      if (!workspaceId) {
+        deferReason = "workspace_not_found";
+        outcome = "deferred";
+      } else {
+        const currentRow = await supabase
+          .from("workspaces")
+          .select("plan_status,payu_last_event_created,payu_last_event_id")
+          .eq("id", workspaceId)
+          .maybeSingle();
+        if (currentRow.error) {
+          throw createHttpError(500, "DB_ERROR", currentRow.error.message ?? "Failed to read billing cursor");
+        }
+        const current = currentRow.data as
+          | {
+            plan_status?: string;
+            payu_last_event_created?: number | null;
+            payu_last_event_id?: string | null;
+          }
+          | null;
+        const shouldApply = shouldApplyPayUEvent(current?.payu_last_event_created, current?.payu_last_event_id, eventCreated, eventId);
+        if (!shouldApply) {
+          outcome = "ignored_stale";
+        } else {
+          const planCode = resolveEntitlementPlanCode(txn.plan_code);
+          const plan = payuStatus === "success" ? authPlanFromEntitlement(planCode) : "free";
+          const planStatus = payuStatus === "success" ? "active" : planStatusFromPayUStatus(payuStatus);
+          const oldStatus = normalizePlanStatus(current?.plan_status);
+          const updatePayload = {
+            billing_provider: "payu",
+            payu_txn_id: txnId,
+            payu_payment_id: paymentId,
+            payu_last_status: payuStatus,
+            payu_last_plan: plan,
+            payu_last_event_id: eventId,
+            payu_last_event_created: eventCreated,
+            plan,
+            plan_status: planStatus,
+            current_period_end: paymentPeriodEndFromStatus(payuStatus),
+            cancel_at_period_end: false,
+            updated_at: new Date().toISOString(),
+          };
+          const updated = await supabase.from("workspaces").update(updatePayload).eq("id", workspaceId);
+          if (updated.error) {
+            throw createHttpError(500, "DB_ERROR", updated.error.message ?? "Failed to update PayU billing state");
+          }
+          if ((planStatus === "active" || planStatus === "trialing") && !(oldStatus === "active" || oldStatus === "trialing")) {
+            void emitProductEvent(
+              supabase,
+              "upgrade_activated",
+              {
+                workspaceId,
+                requestId,
+                route: "/v1/billing/webhook",
+                method: "POST",
+                status: 200,
+                effectivePlan: plan,
+                planStatus,
+              },
+            );
+          }
         }
       }
     }
