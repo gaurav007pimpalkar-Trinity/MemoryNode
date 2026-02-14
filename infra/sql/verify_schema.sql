@@ -14,7 +14,8 @@ with required_tables(name) as (
     ('payu_webhook_events'),
     ('payu_transactions'),
     ('workspace_entitlements'),
-    ('memorynode_migrations')
+    ('memorynode_migrations'),
+    ('dashboard_sessions')
 ),
 missing_tables as (
   select name

@@ -1,9 +1,11 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, expect, it } from "vitest";
 import { performSearch } from "../src/index.js";
+import { makeTestEnv } from "./helpers/env.js";
 
 const uniqueText = "tenant-leak-zzz";
 
+/** Custom Supabase mock that returns data only for workspace "wsA". */
 function makeSupabase() {
   return {
     rpc(name: string, args: Record<string, any>) {
@@ -46,20 +48,7 @@ function makeSupabase() {
   };
 }
 
-const envStub = {
-  EMBEDDINGS_MODE: "stub",
-  OPENAI_API_KEY: "",
-  API_KEY_SALT: "",
-  SUPABASE_URL: "",
-  SUPABASE_SERVICE_ROLE_KEY: "",
-  MASTER_ADMIN_TOKEN: "",
-  RATE_LIMIT_DO: {
-    idFromName: (n: string) => n,
-    get: () => ({
-      fetch: async () => new Response(JSON.stringify({ allowed: true, count: 1, limit: 100, reset: 0 }), { status: 200 }),
-    }),
-  },
-};
+const envStub = makeTestEnv();
 
 describe("cross-tenant isolation for search/context", () => {
   it("search does not leak between workspaces", async () => {

@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Component, useCallback, useEffect, useMemo, useState } from "react";
 import { Session, type AuthChangeEvent } from "@supabase/supabase-js";
 import { supabase, supabaseEnvError } from "./supabaseClient";
 import { ApiKeyRow, InviteRow, MemoryRow, UsageRow } from "./types";
 import { loadWorkspaceId, persistWorkspaceId } from "./state";
-import { ApiClientError, apiEnvError, apiGet, apiPost, loadApiKey, maskKey, saveApiKey } from "./apiClient";
+import { ApiClientError, apiEnvError, apiGet, apiPost, ensureDashboardSession, dashboardLogout, setOnUnauthorized } from "./apiClient";
 
 type Tab = "workspaces" | "keys" | "memories" | "usage" | "activation" | "settings";
 
@@ -26,7 +26,56 @@ const activationEvents: Array<{ key: string; label: string }> = [
   { key: "upgrade_activated", label: "Upgrade activated" },
 ];
 
-const isApiKeyValid = (key: string): boolean => /^mn_/i.test((key ?? "").trim());
+interface ErrorBoundaryProps {
+  children: React.ReactNode;
+  onBack?: () => void;
+  fallbackTitle?: string;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  state: ErrorBoundaryState = { hasError: false, error: null };
+
+  static getDerivedStateFromError(error: Error): Partial<ErrorBoundaryState> {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error): void {
+    console.error("ErrorBoundary caught:", error);
+  }
+
+  handleRetry = (): void => {
+    this.setState({ hasError: false, error: null });
+  };
+
+  handleBack = (): void => {
+    this.setState({ hasError: false, error: null });
+    this.props.onBack?.();
+  };
+
+  render(): React.ReactNode {
+    if (this.state.hasError && this.state.error) {
+      return (
+        <Shell>
+          <Panel title={this.props.fallbackTitle ?? "Something went wrong"}>
+            <p className="muted small">An unexpected error occurred. You can retry or go back.</p>
+            <div className="row">
+              <button onClick={this.handleRetry}>Retry</button>
+              <button className="ghost" onClick={this.handleBack}>
+                Back
+              </button>
+            </div>
+          </Panel>
+        </Shell>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 export function App(): JSX.Element {
   const [session, setSession] = useState<Session | null>(null);
@@ -35,8 +84,8 @@ export function App(): JSX.Element {
   const [workspaceId, setWorkspaceId] = useState(() => loadWorkspaceId());
   const [workspaceSaving, setWorkspaceSaving] = useState(false);
   const [alert, setAlert] = useState<string | null>(null);
-  const [apiKey, setApiKey] = useState(loadApiKey());
-  const apiKeyValid = isApiKeyValid(apiKey);
+  const [sessionReady, setSessionReady] = useState(false);
+  const [sessionError, setSessionError] = useState<string | null>(null);
 
   const missingEnv = useMemo(() => {
     const errs: string[] = [];
@@ -71,6 +120,39 @@ export function App(): JSX.Element {
     const root = (session?.user as unknown as { workspace_id?: string })?.workspace_id;
     return (root as string) ?? (claims?.workspace_id as string) ?? "";
   }, [session]);
+  const effectiveWorkspaceId = workspaceClaim || workspaceId;
+
+  useEffect(() => {
+    if (!session?.access_token || !effectiveWorkspaceId?.trim()) {
+      setSessionReady(false);
+      return;
+    }
+    let cancelled = false;
+    setSessionError(null);
+    ensureDashboardSession(session.access_token, effectiveWorkspaceId)
+      .then(() => {
+        if (!cancelled) setSessionReady(true);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setSessionReady(false);
+          setSessionError(err instanceof Error ? err.message : String(err));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [session?.access_token, effectiveWorkspaceId]);
+
+  useEffect(() => {
+    setOnUnauthorized(() => {
+      setSessionReady(false);
+      setSessionError("Session expired or access denied. Please sign in again or select workspace.");
+      persistWorkspaceId("");
+      setWorkspaceId("");
+    });
+    return () => setOnUnauthorized(null);
+  }, []);
 
   const saveWorkspaceId = async () => {
     if (!workspaceId) return;
@@ -85,11 +167,6 @@ export function App(): JSX.Element {
       setAlert("Workspace saved to JWT; RLS will scope queries.");
     }
     setWorkspaceSaving(false);
-  };
-
-  const updateApiKey = (value: string) => {
-    setApiKey(value);
-    saveApiKey(value);
   };
 
   if (missingEnv.length > 0) {
@@ -120,13 +197,26 @@ export function App(): JSX.Element {
     );
   }
 
-  if (!apiKeyValid) {
+  if (effectiveWorkspaceId && !sessionReady && !sessionError) {
     return (
       <Shell>
-        <ApiKeyPanel apiKey={apiKey} onChange={updateApiKey} />
-        <Panel title="Action required">
-          <div className="badge">Set a valid MemoryNode API key to use the dashboard features.</div>
-          <div className="muted small">Expected format: starts with <code>mn_</code> (e.g., mn_live_...)</div>
+        <Panel title="Loading">Establishing session…</Panel>
+      </Shell>
+    );
+  }
+  if (effectiveWorkspaceId && sessionError) {
+    return (
+      <Shell>
+        <Panel title="Session error">
+          <div className="badge">{sessionError}</div>
+          <div className="row">
+            <button onClick={() => { setSessionError(null); setSessionReady(false); }}>
+              Retry
+            </button>
+            <button className="ghost" onClick={() => supabase.auth.signOut()}>
+              Sign out
+            </button>
+          </div>
         </Panel>
       </Shell>
     );
@@ -140,7 +230,8 @@ export function App(): JSX.Element {
           <div className="muted small">Signed in as {userEmail}</div>
         </div>
         <div className="top-actions">
-          <button className="ghost" onClick={() => supabase.auth.signOut()}>
+          <span className="muted small">Session active</span>
+          <button className="ghost" onClick={async () => { await dashboardLogout(); await supabase.auth.signOut(); }}>
             Sign out
           </button>
         </div>
@@ -158,6 +249,7 @@ export function App(): JSX.Element {
         ))}
       </nav>
 
+      <ErrorBoundary onBack={() => setTab("workspaces")}>
       <div className="grid">
         <Panel title="Workspace scope">
           <p className="muted small">
@@ -184,17 +276,16 @@ export function App(): JSX.Element {
           <div className="muted small">Current claim: {workspaceClaim || "not set"}</div>
         </Panel>
 
-        <ApiKeyPanel apiKey={apiKey} onChange={updateApiKey} />
-
         {tab === "workspaces" && (
           <WorkspacesView workspaceId={workspaceClaim || workspaceId} sessionUserId={session.user.id} />
         )}
         {tab === "keys" && <ApiKeysView workspaceId={workspaceClaim || workspaceId} />}
-        {tab === "memories" && <MemoryView apiKey={apiKey} />}
-        {tab === "usage" && <UsageView apiKey={apiKey} />}
+        {tab === "memories" && <MemoryView userId={session.user.id} />}
+        {tab === "usage" && <UsageView />}
         {tab === "activation" && <ActivationView workspaceId={workspaceClaim || workspaceId} />}
-        {tab === "settings" && <SettingsView session={session} apiKey={apiKey} />}
+        {tab === "settings" && <SettingsView session={session} />}
       </div>
+      </ErrorBoundary>
     </Shell>
   );
 }
@@ -209,30 +300,6 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
       <div className="panel-head">{title}</div>
       <div className="panel-body">{children}</div>
     </section>
-  );
-}
-
-function ApiKeyPanel({ apiKey, onChange }: { apiKey: string; onChange: (val: string) => void }) {
-  return (
-    <Panel title="API key (Worker API)">
-      <p className="muted small">
-        Used for search, usage, and billing calls to the Worker API. Stored in your browser only.
-      </p>
-      <div className="row">
-        <input
-          value={apiKey}
-          onChange={(e) => onChange(e.target.value)}
-          placeholder="mn_live_..."
-        />
-        <span className="muted small">{maskKey(apiKey)}</span>
-        <button className="ghost" onClick={() => onChange("")}>
-          Clear
-        </button>
-      </div>
-      {!isApiKeyValid(apiKey) && (
-        <div className="badge">Enter a key starting with mn_ (e.g., mn_live_...)</div>
-      )}
-    </Panel>
   );
 }
 
@@ -436,6 +503,12 @@ function ApiKeysView({ workspaceId }: { workspaceId: string }) {
                   {k.key_prefix ?? "mn_live"}…{k.key_last4 ?? "****"}
                 </span>
                 <div className="muted small">Created {new Date(k.created_at).toLocaleString()}</div>
+                {k.last_used_at && (
+                  <div className="muted small">
+                    Last used {new Date(k.last_used_at).toLocaleString()}
+                    {k.last_used_ip ? ` from ${k.last_used_ip}` : ""}
+                  </div>
+                )}
               </div>
               <div className="row">
                 <span className="badge">{k.revoked_at ? "revoked" : "active"}</span>
@@ -474,8 +547,10 @@ function ApiKeysView({ workspaceId }: { workspaceId: string }) {
   );
 }
 
-function MemoryView({ apiKey }: { apiKey: string }) {
+function MemoryView({ userId }: { userId: string }) {
   const [rows, setRows] = useState<MemoryRow[]>([]);
+  const [total, setTotal] = useState<number | null>(null);
+  const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -498,8 +573,8 @@ function MemoryView({ apiKey }: { apiKey: string }) {
   };
 
   const search = async (resetPage = true) => {
-    if (!isApiKeyValid(apiKey)) {
-      setError("Set a valid API key (mn_ prefix)");
+    if (!userId?.trim()) {
+      setError("User context missing. Sign in again if this persists.");
       return;
     }
     if (resetPage) setPage(1);
@@ -515,7 +590,7 @@ function MemoryView({ apiKey }: { apiKey: string }) {
           page_size: number;
           filters?: SearchFilters;
         } = {
-          user_id: "dash-user",
+          user_id: userId,
           namespace: namespace || undefined,
           query: query || "",
           page: resetPage ? 1 : page,
@@ -531,12 +606,13 @@ function MemoryView({ apiKey }: { apiKey: string }) {
         body.filters.end_time = end || undefined;
       }
 
-      const res = await apiPost<{ results: MemoryRow[] }>(
+      const res = await apiPost<{ results: MemoryRow[]; total?: number; has_more?: boolean }>(
         "/v1/search",
         body,
-        apiKey,
       );
       setRows(resetPage ? res.results : [...rows, ...res.results]);
+      setTotal(res.total ?? null);
+      setHasMore(res.has_more ?? false);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       setError(msg);
@@ -551,9 +627,8 @@ function MemoryView({ apiKey }: { apiKey: string }) {
   };
 
   const openMemory = async (id: string) => {
-    if (!isApiKeyValid(apiKey)) return;
     try {
-      const res = await apiGet<MemoryRow>(`/v1/memories/${id}`, apiKey);
+      const res = await apiGet<MemoryRow>(`/v1/memories/${id}`);
       setSelected(res);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -563,21 +638,21 @@ function MemoryView({ apiKey }: { apiKey: string }) {
 
   return (
     <Panel title="Memory Browser">
-      <div className="muted small">Using API key: {maskKey(apiKey) || "not set"} (edit in API key panel).</div>
+      <div className="muted small">Using session (workspace-scoped).</div>
       <div className="row">
         <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search query" />
         <input value={namespace} onChange={(e) => setNamespace(e.target.value)} placeholder="Namespace/project" />
       </div>
       <div className="row">
         <input value={metadata} onChange={(e) => setMetadata(e.target.value)} placeholder='Metadata JSON {"tag":"x"}' />
-        <input type="date" value={start} onChange={(e) => setStart(e.target.value)} />
-        <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} />
+        <input type="date" value={start} onChange={(e) => setStart(e.target.value)} title="Start date" />
+        <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} title="End date" />
       </div>
       <div className="row">
         <button onClick={() => search(true)} disabled={loading}>
           {loading ? "Searching…" : "Search"}
         </button>
-        <button className="ghost" onClick={() => setRows([])}>
+        <button className="ghost" onClick={() => { setRows([]); setTotal(null); setHasMore(false); }}>
           Clear
         </button>
       </div>
@@ -594,7 +669,7 @@ function MemoryView({ apiKey }: { apiKey: string }) {
       {rows.length === 0 && !loading && <div className="muted small">No results.</div>}
       <div className="list">
         {rows.map((r) => (
-          <div key={r.id} className="card" onClick={() => openMemory(r.id)} style={{ cursor: "pointer" }}>
+          <div key={r.id} className="card clickable" onClick={() => openMemory(r.id)}>
             <div className="row-space">
               <strong>{r.namespace}</strong>
               <span className="muted small">{new Date(r.created_at).toLocaleString()}</span>
@@ -606,9 +681,20 @@ function MemoryView({ apiKey }: { apiKey: string }) {
         ))}
       </div>
       {rows.length > 0 && (
-        <button className="ghost" onClick={loadMore} disabled={loading}>
-          {loading ? "Loading…" : "Load more"}
-        </button>
+        <>
+          {total != null && (
+            <div className="muted small">
+              {rows.length} of {total} result{total !== 1 ? "s" : ""}.
+            </div>
+          )}
+          <button
+            className="ghost"
+            onClick={loadMore}
+            disabled={loading || !hasMore || (total != null && rows.length >= total)}
+          >
+            {loading ? "Loading…" : !hasMore || (total != null && rows.length >= total) ? "No more results" : "Load more"}
+          </button>
+        </>
       )}
 
       {selected && (
@@ -628,24 +714,20 @@ function MemoryView({ apiKey }: { apiKey: string }) {
   );
 }
 
-function UsageView({ apiKey }: { apiKey: string }) {
+function UsageView() {
   const [usage, setUsage] = useState<UsageRow | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = async () => {
-    if (!isApiKeyValid(apiKey)) {
-      setError("Set a valid API key");
-      return;
-    }
     setLoading(true);
     setError(null);
     try {
-      const res = await apiGet<UsageRow>("/v1/usage/today", apiKey);
+      const res = await apiGet<UsageRow>("/v1/usage/today");
       setUsage(res);
     } catch (err: unknown) {
       if (err instanceof ApiClientError) {
-        if (err.status === 401) setError("Missing/invalid API key");
+        if (err.status === 401) setError("Session expired or invalid");
         else if (err.status === 402) setError("Over daily cap");
         else if (err.status === 429) setError("Rate limited");
         else setError(err.message);
@@ -660,11 +742,11 @@ function UsageView({ apiKey }: { apiKey: string }) {
 
   useEffect(() => {
     void load();
-  }, [apiKey]);
+  }, []);
 
   return (
     <Panel title="Usage">
-      <div className="muted small">Using API key: {maskKey(apiKey) || "not set"} (edit in API key panel).</div>
+      <div className="muted small">Using session (workspace-scoped).</div>
       {loading && <div>Loading…</div>}
       {error && (
         <div className="badge">
@@ -760,7 +842,7 @@ function ActivationView({ workspaceId }: { workspaceId: string }) {
               Last 7d
             </button>
           </div>
-          {loading && <div>Loadingâ€¦</div>}
+          {loading && <div>Loading…</div>}
           {error && <div className="badge">{error}</div>}
           <ul className="list">
             {activationEvents.map((evt) => (
@@ -779,7 +861,7 @@ function ActivationView({ workspaceId }: { workspaceId: string }) {
   );
 }
 
-function BillingView({ apiKey }: { apiKey: string }) {
+function BillingView() {
   const [status, setStatus] = useState<{
     plan: string;
     plan_status: string;
@@ -798,10 +880,6 @@ function BillingView({ apiKey }: { apiKey: string }) {
   });
 
   const load = async () => {
-    if (!isApiKeyValid(apiKey)) {
-      setError("API key required to load billing");
-      return;
-    }
     setLoading(true);
     setError(null);
     try {
@@ -811,7 +889,7 @@ function BillingView({ apiKey }: { apiKey: string }) {
         effective_plan: string;
         current_period_end: string | null;
         cancel_at_period_end: boolean;
-      }>("/v1/billing/status", apiKey);
+      }>("/v1/billing/status");
       setStatus(res);
       setBanner(null);
     } catch (err) {
@@ -827,17 +905,13 @@ function BillingView({ apiKey }: { apiKey: string }) {
   };
 
   const openCheckout = async () => {
-    if (!isApiKeyValid(apiKey)) {
-      setError("API key required");
-      return;
-    }
     setError(null);
     try {
       const res = await apiPost<{
         url: string;
         method?: string;
         fields?: Record<string, string>;
-      }>("/v1/billing/checkout", {}, apiKey);
+      }>("/v1/billing/checkout", {});
 
       if ((res.method ?? "GET").toUpperCase() === "POST" && res.fields && Object.keys(res.fields).length > 0) {
         const target = window.open("", "_blank", "noopener");
@@ -863,7 +937,7 @@ ${Object.entries(res.fields)
 
   useEffect(() => {
     void load();
-  }, [apiKey]);
+  }, []);
 
   const renewal =
     status?.current_period_end != null
@@ -871,7 +945,7 @@ ${Object.entries(res.fields)
       : "not set";
 
   return (
-    <div className="stack" style={{ marginTop: 16 }}>
+    <div className="stack mt-lg">
       {banner && <div className="badge">{banner}</div>}
       {error && <div className="badge">{error}</div>}
       <div className="row-space">
@@ -900,7 +974,7 @@ ${Object.entries(res.fields)
   );
 }
 
-function SettingsView({ session, apiKey }: { session: Session; apiKey: string }) {
+function SettingsView({ session }: { session: Session }) {
   return (
     <Panel title="Settings">
       <div className="muted small">User ID: {session.user.id}</div>
@@ -909,7 +983,7 @@ function SettingsView({ session, apiKey }: { session: Session; apiKey: string })
       <div className="muted small">
         Claims: <code>{JSON.stringify(session.user.user_metadata)}</code>
       </div>
-      <BillingView apiKey={apiKey} />
+      <BillingView />
     </Panel>
   );
 }
@@ -1000,7 +1074,7 @@ function MembersView({ workspaceId, currentUserId }: { workspaceId: string; curr
   if (!workspaceId) return null;
 
   return (
-    <div className="panel" style={{ marginTop: 12 }}>
+    <div className="panel mt-md">
       <div className="panel-head">Members & Invites</div>
       {error && <div className="badge">{error}</div>}
       {loading && <div>Loading…</div>}
@@ -1012,7 +1086,7 @@ function MembersView({ workspaceId, currentUserId }: { workspaceId: string; curr
             onChange={(e) => setNewEmail(e.target.value)}
             placeholder="invitee@example.com"
           />
-          <select value={inviteRole} onChange={(e) => setInviteRole(e.target.value as typeof inviteRole)}>
+          <select value={inviteRole} onChange={(e) => setInviteRole(e.target.value as typeof inviteRole)} title="Invite role">
             <option value="member">Member</option>
             <option value="admin">Admin</option>
             <option value="owner">Owner</option>
@@ -1023,7 +1097,7 @@ function MembersView({ workspaceId, currentUserId }: { workspaceId: string; curr
         </div>
       </div>
 
-      <div className="muted small" style={{ marginTop: 8 }}>Members</div>
+      <div className="muted small mt-sm">Members</div>
       {!loading && members.length === 0 && <div className="muted small">No members found.</div>}
       <ul className="list">
         {members.map((m) => (
@@ -1037,6 +1111,7 @@ function MembersView({ workspaceId, currentUserId }: { workspaceId: string; curr
                 value={m.role}
                 onChange={(e) => updateRole(m.user_id, e.target.value)}
                 disabled={busy}
+                title="Member role"
               >
                 <option value="member">Member</option>
                 <option value="admin">Admin</option>
@@ -1054,7 +1129,7 @@ function MembersView({ workspaceId, currentUserId }: { workspaceId: string; curr
         ))}
       </ul>
 
-      <div className="muted small" style={{ marginTop: 12 }}>Pending invites</div>
+      <div className="muted small mt-md">Pending invites</div>
       {invites.length === 0 && <div className="muted small">No invites.</div>}
       <ul className="list">
         {invites.map((i) => (

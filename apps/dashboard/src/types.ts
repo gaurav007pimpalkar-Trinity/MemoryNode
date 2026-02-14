@@ -6,6 +6,8 @@ export type ApiKeyRow = {
   created_at: string;
   key_prefix?: string;
   key_last4?: string;
+  last_used_at?: string | null;
+  last_used_ip?: string | null;
 };
 
 export type MemoryRow = {

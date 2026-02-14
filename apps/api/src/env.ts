@@ -1,13 +1,18 @@
+import type { DurableObjectNamespace } from "@cloudflare/workers-types";
+
 export type EnvironmentStage = "dev" | "staging" | "prod";
 export type RateLimitMode = "on" | "off";
 
-// Central env typing for the Worker
+/** Single source of truth for Worker env. Used by index.ts and tests. */
 export interface Env {
   SUPABASE_URL: string;
   SUPABASE_SERVICE_ROLE_KEY: string;
+  /** Optional: used to verify dashboard user JWT via Supabase Auth API (Get User). */
+  SUPABASE_ANON_KEY?: string;
   OPENAI_API_KEY: string;
   API_KEY_SALT: string;
   MASTER_ADMIN_TOKEN: string;
+  AUTH_DEBUG?: string;
   EMBEDDINGS_MODE?: string;
   SUPABASE_MODE?: string;
   ENVIRONMENT?: string;
@@ -15,6 +20,7 @@ export interface Env {
   BUILD_VERSION?: string;
   GIT_SHA?: string;
   RATE_LIMIT_DO: DurableObjectNamespace;
+  RATE_LIMIT_MODE?: string;
   ALLOWED_ORIGINS?: string;
   MAX_BODY_BYTES?: string;
   AUDIT_IP_SALT?: string;
@@ -34,7 +40,6 @@ export interface Env {
   PAYU_VERIFY_URL?: string;
   PAYU_VERIFY_TIMEOUT_MS?: string;
   PAYU_CURRENCY?: string;
-  RATE_LIMIT_MODE?: string;
 }
 
 export function getEnvironmentStage(env: Env): EnvironmentStage {
@@ -89,4 +94,3 @@ export function validateRateLimitConfig(env: Env, stage: EnvironmentStage): stri
   }
   return null;
 }
-import type { DurableObjectNamespace } from "@cloudflare/workers-types";

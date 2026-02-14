@@ -132,6 +132,22 @@ button.ghost {
   background: rgba(17, 24, 39, 0.6);
 }
 
+.card.clickable {
+  cursor: pointer;
+}
+
+.mt-sm {
+  margin-top: 8px;
+}
+
+.mt-md {
+  margin-top: 12px;
+}
+
+.mt-lg {
+  margin-top: 16px;
+}
+
 .table {
   width: 100%;
   border-collapse: collapse;
