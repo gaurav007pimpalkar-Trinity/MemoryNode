@@ -45,6 +45,23 @@ export class ApiClientError extends Error {
   }
 }
 
+/** User-facing message for common API errors (Phase 4.3). */
+export function userFacingErrorMessage(err: unknown): string {
+  if (err instanceof ApiClientError) {
+    if (err.code === "METHOD_NOT_ALLOWED")
+      return "That action isn't allowed. Try a different request.";
+    if (err.code === "rate_limited") return "Too many requests. Please wait a moment and try again.";
+    if (err.code === "payload_too_large") return "Request too large. Try a smaller payload.";
+    if (err.status === 401) return "Session expired or invalid. Please sign in again.";
+    if (err.status === 403) return "You don't have permission for this action.";
+    if (err.status === 404) return "Not found.";
+    if (err.status === 402) return "Over daily cap. Upgrade or try again later.";
+    if (err.status >= 500) return "Something went wrong. Please try again.";
+    return err.message || `Request failed (${err.status})`;
+  }
+  return err instanceof Error ? err.message : String(err);
+}
+
 async function fetchJson<T>(path: string, init: RequestInit): Promise<T> {
   if (!API_BASE_URL) {
     throw new ApiClientError(0, "CONFIG", apiEnvError ?? "VITE_API_BASE_URL is not configured.");

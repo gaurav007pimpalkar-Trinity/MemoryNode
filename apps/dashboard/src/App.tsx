@@ -3,7 +3,7 @@ import { Session, type AuthChangeEvent } from "@supabase/supabase-js";
 import { supabase, supabaseEnvError } from "./supabaseClient";
 import { ApiKeyRow, InviteRow, MemoryRow, UsageRow } from "./types";
 import { loadWorkspaceId, persistWorkspaceId } from "./state";
-import { ApiClientError, apiEnvError, apiGet, apiPost, ensureDashboardSession, dashboardLogout, setOnUnauthorized } from "./apiClient";
+import { ApiClientError, apiEnvError, apiGet, apiPost, ensureDashboardSession, dashboardLogout, setOnUnauthorized, userFacingErrorMessage } from "./apiClient";
 
 type Tab = "workspaces" | "keys" | "memories" | "usage" | "activation" | "settings";
 
@@ -437,8 +437,7 @@ function ApiKeysView({ workspaceId }: { workspaceId: string }) {
       const { data } = await supabase.rpc("list_api_keys", { p_workspace_id: workspaceId });
       setKeys((data as ApiKeyRow[] | null) ?? []);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setError(msg);
+      setError(userFacingErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -572,12 +571,14 @@ function MemoryView({ userId }: { userId: string }) {
     }
   };
 
-  const search = async (resetPage = true) => {
+  const search = async (resetPage = true, fetchPage?: number) => {
     if (!userId?.trim()) {
       setError("User context missing. Sign in again if this persists.");
       return;
     }
+    const pageToUse = fetchPage ?? (resetPage ? 1 : page);
     if (resetPage) setPage(1);
+    else setPage(pageToUse);
     setLoading(true);
     setError(null);
       try {
@@ -593,7 +594,7 @@ function MemoryView({ userId }: { userId: string }) {
           user_id: userId,
           namespace: namespace || undefined,
           query: query || "",
-          page: resetPage ? 1 : page,
+          page: pageToUse,
           page_size: pageSize,
         };
       const filters = parseMetadata();
@@ -614,16 +615,14 @@ function MemoryView({ userId }: { userId: string }) {
       setTotal(res.total ?? null);
       setHasMore(res.has_more ?? false);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setError(msg);
+      setError(userFacingErrorMessage(err));
     } finally {
       setLoading(false);
     }
   };
 
   const loadMore = () => {
-    setPage((p) => p + 1);
-    void search(false);
+    void search(false, page + 1);
   };
 
   const openMemory = async (id: string) => {
@@ -726,15 +725,7 @@ function UsageView() {
       const res = await apiGet<UsageRow>("/v1/usage/today");
       setUsage(res);
     } catch (err: unknown) {
-      if (err instanceof ApiClientError) {
-        if (err.status === 401) setError("Session expired or invalid");
-        else if (err.status === 402) setError("Over daily cap");
-        else if (err.status === 429) setError("Rate limited");
-        else setError(err.message);
-      } else {
-        const msg = err instanceof Error ? err.message : String(err);
-        setError(msg);
-      }
+      setError(userFacingErrorMessage(err));
     } finally {
       setLoading(false);
     }

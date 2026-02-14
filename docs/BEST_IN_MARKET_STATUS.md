@@ -66,16 +66,16 @@ Status as of the last review. **Phases 0, 1, 2, and 3 are complete.** Phases 4�
 
 ---
 
-## Phase 4: Dashboard reliability and first 10 minutes
+## Phase 4: Dashboard reliability and first 10 minutes — **Complete**
 
 | Item | Status | Notes |
 |------|--------|--------|
-| 4.1 Load more / pagination | ⚠️ Unverified | MemoryView may already use total/has_more; needs check. |
-| 4.2 First-run flow | ❌ Not done | Not documented/streamlined per plan. |
-| 4.3 No confusing errors | ⚠️ Partial | Some copy; 405/user-facing messages may be incomplete. |
-| 4.4 Dashboard deployment | ⚠️ Partial | STATUS_PAGE.md and PROD_SETUP_CHECKLIST/RELEASE_RUNBOOK include status page; dashboard deploy path needs verification. |
+| 4.1 Load more / pagination | ✅ Done | MemoryView uses total, has_more; Load more disabled when no more; "X of Y" displayed. loadMore fetches correct page. |
+| 4.2 First-run flow | ✅ Done | FIRST_RUN_FLOW.md; QUICKSTART §6 links; sign up → workspace → key → ingest → search documented. |
+| 4.3 No confusing errors | ✅ Done | userFacingErrorMessage() maps METHOD_NOT_ALLOWED, rate_limited, 401/402/403/404/5xx to clear copy. |
+| 4.4 Dashboard deployment | ✅ Done | DASHBOARD_DEPLOY.md; PROD_SETUP_CHECKLIST, RELEASE_RUNBOOK §9 updated. |
 
-**Phase 4:** **Not done** (or only partially).
+**Phase 4:** **Complete.**
 
 ---
 
@@ -131,7 +131,7 @@ Status as of the last review. **Phases 0, 1, 2, and 3 are complete.** Phases 4�
 
 ## Go/no-go (from plan)
 
-- **Production-ready:** Phases 0, 1, 2, 3, 4 complete; Phase 6 runbooks/quickstart; G1–G5 passing. **Current:** Phases 0, 1, 2, and 3 complete; G1–G5 in CI and passing; Phases 4, 6 not complete.
+- **Production-ready:** Phases 0, 1, 2, 3, 4 complete; Phase 6 runbooks/quickstart; G1–G5 passing. **Current:** Phases 0–4 complete; G1–G5 in CI and passing; Phase 6 not complete.
 - **Best-in-market:** Above + Phase 5, status page, public proof artifacts. **Current:** Status page done; Phase 5 and DATA_RETENTION not done.
 
 ---
@@ -144,10 +144,10 @@ Status as of the last review. **Phases 0, 1, 2, and 3 are complete.** Phases 4�
 | Phase 1 (API + config) | ✅ **Done** |
 | Phase 2 (Worker split) | ✅ **Done** |
 | Phase 3 (Observability) | ✅ **Complete** |
-| Phase 4 (Dashboard + first 10 min) | ❌ **No** |
+| Phase 4 (Dashboard + first 10 min) | ✅ **Complete** |
 | Phase 5 (Retrieval cockpit) | ❌ **No** |
 | Phase 6 (Tests + DX) | ❌ **No** |
 | G1–G5 | ✅ **All in CI, passing** |
 | Public proof artifacts | ⚠️ Partial (SLO, incident process, trust changelog, TRUST.md done; DATA_RETENTION not) |
 
-**So: Phases 0, 1, 2, and 3 are complete.** Remaining for full "production-ready": Phase 4 (dashboard UX/deploy). For "best-in-market": Phase 5 (retrieval cockpit), Phase 6 (runbooks/quickstart), DATA_RETENTION.md.
+**So: Phases 0, 1, 2, 3, and 4 are complete.** Remaining for full "production-ready": Phase 6 (runbooks/quickstart). For "best-in-market": Phase 5 (retrieval cockpit), DATA_RETENTION.md.

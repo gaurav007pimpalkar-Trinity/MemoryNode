@@ -86,6 +86,7 @@ corepack pnpm dev --filter @memorynode/dashboard  # opens http://127.0.0.1:4173
 1. Sign in (GitHub OAuth or magic link).
 2. Create a workspace (Workspaces tab).
 3. Go to API Keys tab → “Create key” → copy the plaintext key (shown once). Save it.
+4. Ingest one memory (curl below); then run one search. See `docs/FIRST_RUN_FLOW.md`.
 
 ## 7) Curl smoke (replace `<API_KEY>` and `<BASE>` with your worker URL)
 ```bash
