@@ -77,15 +77,13 @@ returns table (
   created_at timestamptz,
   revoked_at timestamptz,
   key_prefix text,
-  key_last4 text,
-  last_used_at timestamptz,
-  last_used_ip text
+  key_last4 text
 )
 security definer
 set search_path = public
 language sql
 as $$
-  select id, workspace_id, name, created_at, revoked_at, key_prefix, key_last4, last_used_at, last_used_ip
+  select id, workspace_id, name, created_at, revoked_at, key_prefix, key_last4
   from api_keys
   where workspace_id = p_workspace_id
     and (
