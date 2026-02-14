@@ -1,0 +1,132 @@
+{
+  "$schema": "https://memorynode.ai/schemas/alert_rules.json",
+  "version": "1",
+  "measurement_window_minutes": 5,
+  "alerts": [
+    {
+      "id": "A1",
+      "name": "5xx error rate",
+      "source_filter": "event_name=\"request_completed\" AND status>=500",
+      "warn": { "condition": "rate_pct > 1", "min_events": 5 },
+      "critical": { "condition": "rate_pct > 3 OR count >= 20" },
+      "window_min": 5
+    },
+    {
+      "id": "A2",
+      "name": "Auth failure rate (401/403)",
+      "source_filter": "event_name=\"request_completed\" AND status IN (401,403)",
+      "warn": { "condition": "rate_pct > 20", "min_requests": 30 },
+      "critical": { "condition": "rate_pct > 40", "min_requests": 50 },
+      "window_min": 10
+    },
+    {
+      "id": "A3",
+      "name": "p95 latency",
+      "source_filter": "event_name=\"request_completed\"",
+      "metric": "duration_ms",
+      "percentile": 95,
+      "warn_ms": 1200,
+      "critical_ms": 2500,
+      "window_min": 10
+    },
+    {
+      "id": "B1",
+      "name": "Cap exceeded (402)",
+      "source_filter": "event_name=\"cap_exceeded\"",
+      "warn_count": 50,
+      "critical_count": 150,
+      "window_min": 5
+    },
+    {
+      "id": "B2",
+      "name": "Rate-limit denials (429)",
+      "source_filter": "event_name=\"request_completed\" AND error_code=\"rate_limited\"",
+      "warn_count": 50,
+      "critical_count": 150,
+      "window_min": 5
+    },
+    {
+      "id": "B3",
+      "name": "Top rejecting workspaces",
+      "source_filter": "event_name IN (\"cap_exceeded\") OR (event_name=\"request_completed\" AND error_code=\"rate_limited\")",
+      "group_by": "workspace_id_redacted",
+      "warn_per_workspace": 30,
+      "critical_per_workspace": 100,
+      "window_min": 5
+    },
+    {
+      "id": "C1",
+      "name": "Embed latency",
+      "source_filter": "event_name=\"embed_request\"",
+      "metric": "embed_latency_ms",
+      "percentile": 95,
+      "warn_ms": 2000,
+      "critical_ms": 5000,
+      "critical_condition": "success=false burst >= 5 in 5 min",
+      "window_min": 10
+    },
+    {
+      "id": "C2",
+      "name": "Search latency",
+      "source_filter": "event_name=\"search_request\"",
+      "metric": "search_latency_ms",
+      "percentile": 95,
+      "warn_ms": 3000,
+      "critical_ms": 8000,
+      "window_min": 10
+    },
+    {
+      "id": "D1",
+      "name": "Webhook failures",
+      "source_filter": "event_name IN (\"webhook_failed\",\"billing_endpoint_error\")",
+      "warn_count": 5,
+      "critical_count": 20,
+      "window_min": 10
+    },
+    {
+      "id": "D2",
+      "name": "Signature invalid",
+      "source_filter": "event_name=\"billing_webhook_signature_invalid\"",
+      "warn_count": 1,
+      "critical_count": 5,
+      "window_min": 10
+    },
+    {
+      "id": "D3",
+      "name": "Workspace not found",
+      "source_filter": "event_name=\"billing_webhook_workspace_not_found\"",
+      "warn_count": 3,
+      "critical_count": 10,
+      "window_min": 10
+    },
+    {
+      "id": "D4",
+      "name": "Deferred backlog",
+      "source_filter_deferred": "event_name=\"webhook_deferred\"",
+      "source_filter_reconciled": "event_name=\"webhook_reconciled\"",
+      "metric": "deferred_count - reconciled_count",
+      "warn_count": 5,
+      "critical_count": 15,
+      "window_min": 60
+    },
+    {
+      "id": "E1",
+      "name": "DB RPC latency",
+      "source_filter": "event_name=\"db_rpc\"",
+      "metric": "db_latency_ms",
+      "percentile": 95,
+      "warn_ms": 500,
+      "critical_ms": 1500,
+      "window_min": 10
+    },
+    {
+      "id": "E2",
+      "name": "DB RPC failures",
+      "source_filter": "event_name=\"db_rpc\" AND success=false",
+      "source_filter_alt": "event_name=\"request_completed\" AND error_code=\"DB_ERROR\"",
+      "warn_count": 5,
+      "critical_count": 20,
+      "window_min": 10
+    }
+  ]
+}

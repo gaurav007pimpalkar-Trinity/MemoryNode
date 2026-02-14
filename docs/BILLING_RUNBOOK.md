@@ -1,91 +1,79 @@
-# Billing Webhook Runbook
+# Billing Webhook Runbook (PayU)
 
 ## Purpose
-Production operations guide for Stripe webhook incidents:
-- signature failures
-- replay/idempotency behavior
-- out-of-order event handling
-- safe resend/retry workflow
+Production operations guide for PayU billing webhook/callback incidents:
+- Hash/signature verification failures
+- Replay and idempotency behavior
+- Verify-before-grant (entitlements only after PayU verify API confirms)
+- Deferred and failed event handling
+- Safe reprocess and replay workflow
 
 ## Webhook Safety Model
 - Endpoint: `POST /v1/billing/webhook`
-- Signature verification: Stripe SDK `constructEvent(raw, signature, secret, toleranceSec)` with default tolerance `300s` (override via `STRIPE_WEBHOOK_TOLERANCE_SEC`).
-- Idempotency key: `stripe_webhook_events.event_id` (primary key).
-- Processing status lifecycle in DB:
+- Hash verification: PayU hash is computed from payload fields + `PAYU_MERCHANT_SALT` and `PAYU_MERCHANT_KEY`; request hash must match. Raw body must be unmodified for verification.
+- Verify-before-grant: Entitlements are granted only after the Worker calls the PayU verify API (`PAYU_VERIFY_URL`) and confirms matching `txnid`, amount, currency, and success status. Webhook payload alone does not grant access.
+- Idempotency: `payu_webhook_events.event_id` (primary key) ensures duplicate callbacks are replayed safely.
+- Processing status lifecycle in DB (`payu_webhook_events.status`):
   - `processing`
   - `processed`
-  - `deferred` (workspace/customer mapping missing, safe to retry)
+  - `deferred` (workspace mapping missing or verify failed; safe to retry)
   - `ignored_stale` (older than current billing cursor)
   - `failed` (safe to retry/replay)
-- Deferred metadata fields:
-  - `defer_reason` (for example `workspace_not_found`)
-  - `subscription_id`
-  - `customer_id`
 - Ordering cursor on `workspaces`:
-  - `stripe_last_event_created`
-  - `stripe_last_event_id`
-  - `stripe_last_event_type`
-- Ambiguity reconciliation:
-  - Controlled by `BILLING_RECONCILE_ON_AMBIGUITY`.
-  - Default: enabled in production (`ENVIRONMENT=prod|production`), disabled in dev unless explicitly set.
-  - Triggered on event-order ambiguity (same-second ties, stale ordering conflicts, unknown current subscription state).
-  - Canonical fetch path: `stripe.subscriptions.retrieve(...)` (and `stripe.invoices.retrieve(...)` when invoice events need subscription resolution).
+  - `payu_last_event_created`
+  - `payu_last_event_id`
+  - `payu_last_plan`, `payu_last_status`
+- Ambiguity reconciliation: Controlled by `BILLING_RECONCILE_ON_AMBIGUITY`. When enabled, Worker can use PayU verify API to resolve ordering conflicts.
 
 ## Inspect Webhook State (SQL)
 
-Recent webhook events:
+Recent PayU webhook events:
 ```sql
 select
   event_id,
+  txn_id,
+  payment_id,
   event_type,
+  event_created,
   status,
   defer_reason,
-  subscription_id,
-  event_created,
-  processed_at,
   request_id,
   workspace_id,
-  customer_id,
-  left(coalesce(last_error, ''), 200) as last_error_preview
-from stripe_webhook_events
+  payu_status,
+  left(coalesce(last_error, ''), 200) as last_error_preview,
+  processed_at,
+  received_at
+from payu_webhook_events
 order by coalesce(processed_at, received_at) desc
 limit 100;
 ```
 
 Deferred backlog:
 ```sql
-select
-  status,
-  defer_reason,
-  count(*) as total
-from stripe_webhook_events
+select status, defer_reason, count(*) as total
+from payu_webhook_events
 where status = 'deferred'
 group by status, defer_reason
 order by total desc;
 ```
 
-Single event by Stripe event id:
+Single event by PayU event id / txn id:
 ```sql
-select *
-from stripe_webhook_events
-where event_id = 'evt_...';
+select * from payu_webhook_events where event_id = '...';
+select * from payu_webhook_events where txn_id = '...';
 ```
 
-Workspace billing cursor + state:
+Workspace billing cursor:
 ```sql
-select
-  id,
-  plan,
-  plan_status,
-  stripe_customer_id,
-  stripe_subscription_id,
-  stripe_price_id,
-  stripe_last_event_created,
-  stripe_last_event_id,
-  stripe_last_event_type,
-  updated_at
-from workspaces
-where id = '...';
+select id, plan, plan_status,
+  payu_txn_id, payu_payment_id, payu_last_status, payu_last_plan,
+  payu_last_event_created, payu_last_event_id, updated_at
+from workspaces where id = '...';
+```
+
+Entitlements (granted after verify):
+```sql
+select * from workspace_entitlements where workspace_id = '...' order by created_at desc;
 ```
 
 ## Log Queries (Cloudflare Worker Logs)
@@ -98,57 +86,47 @@ Use these event names:
 - `webhook_deferred`
 - `webhook_reconciled`
 - `webhook_failed`
-- `billing_webhook_workspace_not_found` (mapping issue)
-- `webhook_reprocess_started`
-- `webhook_reprocess_processed`
-- `webhook_reprocess_skipped`
-- `webhook_reprocess_failed`
+- `billing_webhook_workspace_not_found`
+- `billing_webhook_signature_invalid` (hash mismatch)
 
 Recommended filters:
 - `event_name="webhook_failed"`
-- `event_name="webhook_replayed" AND stripe_event_id="evt_..."`
 - `event_name="webhook_deferred"`
-- `event_name="webhook_reconciled" AND stripe_event_id="evt_..."`
-- `event_name=\"webhook_reprocess_failed\"`
-- `request_id="<x-request-id from client/Stripe attempt>"`
-- `stripe_event_id="evt_..."`
+- `event_name="webhook_reconciled"`
+- `request_id="<x-request-id from client or PayU callback>"`
 
 ## Replay / Retry Procedure
 
-1. Confirm the webhook row:
+1. Confirm the webhook row in `payu_webhook_events`:
    - If status is `processed` or `ignored_stale`, do **not** manually mutate billing state.
-   - If status is `deferred`, fix mapping and replay (same event id is re-attempted).
-   - If status is `failed`, replay is safe (same event id is retried).
-2. Fix root cause first (secret mismatch, DB outage, mapping gap, etc.).
-3. Resend from Stripe:
-   - Stripe Dashboard -> Developers -> Webhooks -> Events -> select event -> **Resend**.
-   - Or Stripe CLI (example): `stripe events resend evt_... --webhook-endpoint=we_...`.
-4. Optional admin batch reprocess (requires `x-admin-token`):
+   - If status is `deferred`, fix mapping (e.g. workspace for the payment) and replay or call admin reprocess.
+   - If status is `failed`, replay is safe (same event_id is retried).
+2. Fix root cause (hash/secret mismatch, DB outage, mapping gap, PayU verify API unreachable, etc.).
+3. Resend from PayU: Use PayU merchant dashboard to resend the callback to your webhook URL if supported; or use admin reprocess (below).
+4. Admin batch reprocess (requires `x-admin-token`):
    - `POST /admin/webhooks/reprocess?status=deferred&limit=100`
    - Also supports `status=failed` for retry batches.
-4. Verify:
-   - `stripe_webhook_events.status` becomes `processed` or `ignored_stale` (or remains `deferred` if mapping still missing).
-   - `workspaces.stripe_last_event_*` reflects newest event.
-   - Logs show `webhook_verified` + `webhook_processed` (or `webhook_replayed` / `webhook_deferred` / `webhook_reconciled` as applicable).
+5. Verify:
+   - `payu_webhook_events.status` becomes `processed` or `ignored_stale` (or remains `deferred` if mapping still missing).
+   - `workspaces.payu_last_event_*` reflects newest event; `workspace_entitlements` updated when verify succeeds.
+   - Logs show `webhook_verified` and `webhook_processed` (or `webhook_replayed` / `webhook_deferred` / `webhook_reconciled` as applicable).
 
 ## Common Failure Modes
 
-1. Invalid signature (`invalid_webhook_signature`)
-- Symptoms: HTTP 400, `webhook_failed`, `billing_webhook_signature_invalid`.
-- Fix: verify `STRIPE_WEBHOOK_SECRET`, endpoint URL, and ensure raw body is unmodified.
+1. **Invalid hash (signature verification failure)**
+   - Symptoms: HTTP 400, `webhook_failed`, `billing_webhook_signature_invalid`.
+   - Fix: Verify `PAYU_MERCHANT_KEY` and `PAYU_MERCHANT_SALT`, endpoint URL, and ensure raw body is unmodified (no re-parsing that changes field order).
 
-2. Workspace not found
-- Symptoms: `billing_webhook_workspace_not_found`, `webhook_deferred`, HTTP 202 with `webhook_deferred`.
-- Fix: backfill `workspaces.stripe_customer_id` mapping, then resend event or call `/admin/webhooks/reprocess?status=deferred`.
+2. **Workspace not found**
+   - Symptoms: `billing_webhook_workspace_not_found`, `webhook_deferred`, HTTP 202 with deferred.
+   - Fix: Ensure the payment/callback is associated with a workspace (e.g. via udf/merchant param); backfill mapping if needed, then replay or call `/admin/webhooks/reprocess?status=deferred`.
 
-3. Out-of-order events
-- Symptoms: older event delivered after newer one.
-- Behavior:
-  - Without reconciliation flag: event is marked `ignored_stale`; billing cursor is not rolled back.
-  - With reconciliation flag: worker fetches canonical Stripe state and applies it.
-- Action: enable `BILLING_RECONCILE_ON_AMBIGUITY=1` if disabled in the current environment.
+3. **Out-of-order events**
+   - Symptoms: Older callback delivered after newer one.
+   - Behavior: Without reconciliation, event can be marked `ignored_stale`; cursor not rolled back. With `BILLING_RECONCILE_ON_AMBIGUITY=1`, Worker can use PayU verify API to resolve.
+   - Action: Enable `BILLING_RECONCILE_ON_AMBIGUITY=1` in the environment if needed.
 
-4. Transient DB failure
-- Symptoms: event row marked `failed`.
-- Behavior: replay/resend is safe; same `event_id` can be retried.
-- Action: restore DB health, resend event, verify status transition to `processed`.
+4. **Transient DB or verify API failure**
+   - Symptoms: Event row marked `failed`.
+   - Behavior: Replay/resend is safe; same `event_id` can be retried.
+   - Action: Restore DB or network health, resend or reprocess, verify status transition to `processed`.

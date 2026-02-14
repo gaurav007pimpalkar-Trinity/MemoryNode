@@ -43,18 +43,20 @@ Set these as Worker vars for `--env production` (Cloudflare dashboard or Wrangle
 - [ ] `BILLING_WEBHOOKS_ENABLED`
 - [ ] `BILLING_RECONCILE_ON_AMBIGUITY`
 
-Billing vars (required when billing/webhooks are enabled):
+PayU billing vars (required when billing/webhooks are enabled):
 
 - [ ] `PUBLIC_APP_URL`
-- [ ] `STRIPE_PRICE_PRO`
-- [ ] `STRIPE_PRICE_TEAM`
+- [ ] `PAYU_BASE_URL`
+- [ ] `PAYU_VERIFY_URL`
+- [ ] `PAYU_SUCCESS_PATH` (optional; default used if unset)
+- [ ] `PAYU_CANCEL_PATH` (optional; default used if unset)
+- [ ] `PAYU_PRO_AMOUNT` (optional)
+- [ ] `PAYU_PRODUCT_INFO` (optional)
+- [ ] `PAYU_CURRENCY` (optional)
 
 Common optional vars:
 
 - [ ] `ALLOWED_ORIGINS` (recommended for strict CORS)
-- [ ] `STRIPE_PORTAL_CONFIGURATION_ID`
-- [ ] `STRIPE_SUCCESS_PATH`
-- [ ] `STRIPE_CANCEL_PATH`
 - [ ] `BUILD_VERSION`
 - [ ] `GIT_SHA`
 
@@ -67,13 +69,13 @@ pnpm --filter @memorynode/api exec wrangler secret put SUPABASE_SERVICE_ROLE_KEY
 pnpm --filter @memorynode/api exec wrangler secret put API_KEY_SALT --env production
 pnpm --filter @memorynode/api exec wrangler secret put MASTER_ADMIN_TOKEN --env production
 pnpm --filter @memorynode/api exec wrangler secret put OPENAI_API_KEY --env production
-pnpm --filter @memorynode/api exec wrangler secret put STRIPE_SECRET_KEY --env production
-pnpm --filter @memorynode/api exec wrangler secret put STRIPE_WEBHOOK_SECRET --env production
+pnpm --filter @memorynode/api exec wrangler secret put PAYU_MERCHANT_KEY --env production
+pnpm --filter @memorynode/api exec wrangler secret put PAYU_MERCHANT_SALT --env production
 ```
 
 Notes:
 - [ ] `OPENAI_API_KEY` is required when `EMBEDDINGS_MODE=openai`.
-- [ ] `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` are required when billing/webhooks are enabled.
+- [ ] `PAYU_MERCHANT_KEY` and `PAYU_MERCHANT_SALT` are required when billing/webhooks are enabled. Optionally set `PAYU_WEBHOOK_SECRET` for webhook verification.
 - [ ] Do not put secrets in `wrangler.toml [vars]`.
 
 ### A4. Recommended production routes/domains
@@ -113,31 +115,53 @@ For dashboard production build/deploy env:
 - [ ] `VITE_SUPABASE_ANON_KEY`
 - [ ] `VITE_API_BASE_URL` (set to your production API base URL, e.g. `https://api.memorynode.ai`)
 
-## C) Stripe (production) setup
+## C) PayU (production) setup
 
-### C1. Products/prices used by API
+### C1. PayU secrets (MANDATORY)
 
-The API expects two recurring price IDs:
+- [ ] `PAYU_MERCHANT_KEY` configured as **Worker secret** (NOT vars) — identifies the merchant for PayU API calls
+- [ ] `PAYU_MERCHANT_SALT` configured as **Worker secret** (NOT vars) — used for HMAC-SHA512 hash verification of checkout requests and webhook signatures
+- [ ] Optional: `PAYU_WEBHOOK_SECRET` as Worker secret for additional webhook signature verification
+- [ ] Verify secrets are NOT in `wrangler.toml [vars]` or any committed file
 
-- [ ] `STRIPE_PRICE_PRO` (used when checkout `plan=pro`)
-- [ ] `STRIPE_PRICE_TEAM` (used when checkout `plan=team`)
+**Set secrets via:**
 
-### C2. API + webhook secrets
+```bash
+pnpm --filter @memorynode/api exec wrangler secret put PAYU_MERCHANT_KEY --env production
+pnpm --filter @memorynode/api exec wrangler secret put PAYU_MERCHANT_SALT --env production
+```
 
-- [ ] `STRIPE_SECRET_KEY` configured as Worker secret
-- [ ] `STRIPE_WEBHOOK_SECRET` configured as Worker secret
+### C2. PayU vars (non-secret configuration)
 
-### C3. Webhook endpoint
+- [ ] `PAYU_VERIFY_URL` set in Worker vars (PayU verify API URL; e.g. `https://info.payu.in/merchant/postservice?form=2`)
+- [ ] `PAYU_BASE_URL` set in Worker vars (PayU checkout base URL)
+- [ ] `PUBLIC_APP_URL` set in Worker vars (e.g. `https://app.memorynode.ai`)
 
-- [ ] Create Stripe webhook endpoint:
-  - [ ] URL: `https://api.memorynode.ai/v1/billing/webhook`
-- [ ] Ensure endpoint signing secret is mapped to `STRIPE_WEBHOOK_SECRET`
-- [ ] Ensure webhook events include:
-  - [ ] `customer.subscription.created`
-  - [ ] `customer.subscription.updated`
-  - [ ] `customer.subscription.deleted`
-  - [ ] `invoice.paid`
-  - [ ] `invoice.payment_failed`
+### C3. Webhook endpoint & security controls
+
+- [ ] PayU callback URL: `https://api.memorynode.ai/v1/billing/webhook` (or your API base + `/v1/billing/webhook`)
+- [ ] Configure PayU dashboard to send payment success/callback to this URL
+- [ ] **[MANDATORY] Webhook signature verification**: every inbound PayU callback has its hash verified against `PAYU_MERCHANT_SALT`. The API enforces this automatically — no opt-out.
+- [ ] **[MANDATORY] Verify-before-grant**: entitlements are granted ONLY after the PayU Verify API confirms the transaction. This is enforced by `reconcilePayUWebhook()` in the webhook handler.
+- [ ] Confirm staging uses a **separate** PayU merchant account or salt from production.
+
+### C4. PayU secret rotation playbook
+
+If PayU secrets are compromised:
+
+1. [ ] Rotate key/salt in PayU merchant dashboard immediately
+2. [ ] Update Worker secrets: staging first, then production (see `docs/SECURITY.md` for commands)
+3. [ ] Verify webhook flow: send test callback, confirm `webhook_verified` + `webhook_processed` in logs
+4. [ ] Audit `billing_events` table for forged transactions during exposure window
+5. [ ] Revoke any forged entitlements
+6. [ ] Document incident (see `docs/SECURITY.md` § Incident Response)
+
+### C5. PayU least-privilege
+
+- [ ] API Worker: only runtime that needs `PAYU_MERCHANT_KEY` / `PAYU_MERCHANT_SALT`
+- [ ] CI/CD: does NOT need PayU secrets (they are Worker-bound)
+- [ ] Dashboard app: does NOT need PayU secrets (billing flows go through API)
+- [ ] Operators: use PayU dashboard for config; do NOT keep raw salt in personal env files
 
 ## D) Domain / DNS setup (`memorynode.ai`)
 
@@ -147,6 +171,7 @@ Recommended hostnames:
 - [ ] `api-staging.memorynode.ai` -> Cloudflare Worker staging route
 - [ ] `api-canary.memorynode.ai` -> Cloudflare Worker canary route (recommended)
 - [ ] `app.memorynode.ai` -> dashboard hosting (Cloudflare Pages or your chosen static host)
+- [ ] `status.memorynode.ai` -> status page (see `docs/STATUS_PAGE.md`); deploy via Vercel or Cloudflare Pages
 
 Dashboard/API alignment:
 
@@ -162,7 +187,7 @@ Dashboard/API alignment:
 pnpm release:gate
 ```
 
-2. [ ] Staging DB + deploy + validate:
+1. [ ] Staging DB + deploy + validate:
 
 ```bash
 DATABASE_URL=<staging-db-url> pnpm db:migrate
@@ -172,14 +197,14 @@ pnpm deploy:staging
 TARGET_ENV=staging STAGING_BASE_URL=https://api-staging.memorynode.ai API_KEY=<staging-api-key> pnpm release:staging:validate
 ```
 
-3. [ ] Canary deploy + validate:
+1. [ ] Canary deploy + validate:
 
 ```bash
 pnpm deploy:canary
 TARGET_ENV=canary CANARY_BASE_URL=https://api-canary.memorynode.ai API_KEY=<canary-api-key> pnpm release:canary:validate
 ```
 
-4. [ ] Production DB + deploy + validate:
+1. [ ] Production DB + deploy + validate:
 
 ```bash
 DATABASE_URL=<prod-db-url> pnpm db:migrate
@@ -189,17 +214,33 @@ DEPLOY_ENV=production DEPLOY_CONFIRM=memorynode-prod pnpm deploy:prod
 TARGET_ENV=production PROD_BASE_URL=https://api.memorynode.ai API_KEY=<prod-api-key> pnpm release:prod:validate
 ```
 
-5. [ ] Enable/confirm billing feature flags in production Worker vars:
+1. [ ] Enable/confirm billing feature flags in production Worker vars:
 
 - [ ] `BILLING_WEBHOOKS_ENABLED=1`
 - [ ] `BILLING_RECONCILE_ON_AMBIGUITY=1`
 
-6. [ ] Post-go-live checks:
+1. [ ] Post-go-live checks:
 
 - [ ] `GET https://api.memorynode.ai/healthz` returns `status=ok` with build/version
 - [ ] `x-request-id` is present on responses
-- [ ] Stripe test event is accepted by webhook endpoint
+- [ ] PayU test/callback is accepted by webhook endpoint (check Worker logs for `webhook_verified` / `webhook_processed`)
 - [ ] Worker logs show normal `request_completed` and no burst of `request_failed`
+
+1. [ ] Observability verification (see `docs/OBSERVABILITY.md` § 3):
+
+- [ ] `request_completed` events include `route_group` field
+- [ ] `embed_request` events appear with `embed_latency_ms` on search/ingest
+- [ ] `search_request` events appear with `search_latency_ms` on search
+- [ ] `db_rpc` events appear with `db_latency_ms` on search
+- [ ] Run the 60-second health checklist from `docs/OBSERVABILITY.md` § 3
+- [ ] Confirm alert filters from `docs/ALERTS.md` are configured in your log sink
+
+1. [ ] PayU secret security verification:
+
+- [ ] Confirm `PAYU_MERCHANT_KEY` and `PAYU_MERCHANT_SALT` are set as Worker **secrets** (not vars)
+- [ ] Confirm staging and production use separate PayU credentials
+- [ ] Confirm webhook signature verification is active (send test callback → `webhook_verified` in logs)
+- [ ] Confirm verify-before-grant is active (entitlements granted only after PayU verify API confirmation)
 
 ## F) Inputs quick reference (names only)
 
@@ -215,11 +256,11 @@ TARGET_ENV=production PROD_BASE_URL=https://api.memorynode.ai API_KEY=<prod-api-
 
 ### Required when billing/webhooks are enabled
 
-- [ ] `STRIPE_SECRET_KEY`
-- [ ] `STRIPE_WEBHOOK_SECRET`
+- [ ] `PAYU_MERCHANT_KEY`
+- [ ] `PAYU_MERCHANT_SALT`
 - [ ] `PUBLIC_APP_URL`
-- [ ] `STRIPE_PRICE_PRO`
-- [ ] `STRIPE_PRICE_TEAM`
+- [ ] `PAYU_VERIFY_URL`
+- [ ] `PAYU_BASE_URL`
 
 ### Dashboard env
 

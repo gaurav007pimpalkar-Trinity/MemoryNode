@@ -7,7 +7,7 @@ This is the single source of truth for staging and production releases.
 ### Access
 - Cloudflare: permission to deploy Workers and edit Worker vars/secrets for `staging`, `canary`, and `production`.
 - Supabase/Postgres: permission to run migrations on staging and production DBs.
-- Stripe: permission to view webhook delivery and endpoint signing secret.
+- PayU: permission to view merchant dashboard and verify API for webhook/callback troubleshooting.
 
 ### Local tooling
 - Node.js 20+
@@ -25,16 +25,16 @@ Safe vars (tracked in `apps/api/wrangler.toml`):
 - `BILLING_RECONCILE_ON_AMBIGUITY`
 - `BILLING_WEBHOOKS_ENABLED`
 - `PUBLIC_APP_URL`
-- `STRIPE_PRICE_PRO`
-- `STRIPE_PRICE_TEAM`
+- PayU vars as needed: `PAYU_BASE_URL`, `PAYU_VERIFY_URL`, `PAYU_SUCCESS_PATH`, `PAYU_CANCEL_PATH`, etc. (see `apps/api/wrangler.toml` and docs/PROD_SETUP_CHECKLIST.md)
 
 Secrets (never commit to git):
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `OPENAI_API_KEY` (when `EMBEDDINGS_MODE=openai`)
 - `API_KEY_SALT`
 - `MASTER_ADMIN_TOKEN`
-- `STRIPE_SECRET_KEY`
-- `STRIPE_WEBHOOK_SECRET`
+- `PAYU_MERCHANT_KEY`
+- `PAYU_MERCHANT_SALT`
+- Optionally `PAYU_WEBHOOK_SECRET` for webhook verification
 
 ## 2) Pre-Release Gate (must pass)
 
@@ -50,8 +50,8 @@ If you run this locally, `check:config` expects production-safe env values in sh
 - `API_KEY_SALT`
 - `MASTER_ADMIN_TOKEN`
 - `EMBEDDINGS_MODE`
-- `STRIPE_SECRET_KEY`
-- `STRIPE_WEBHOOK_SECRET`
+- `PAYU_MERCHANT_KEY`
+- `PAYU_MERCHANT_SALT`
 
 What this includes:
 - `pnpm check:typed-entry`
@@ -225,6 +225,15 @@ pnpm --filter @memorynode/api deploy:production
 BASE_URL=https://api.memorynode.ai API_KEY=mn_live_xxx pnpm release:validate
 ```
 
-## 9) Go/No-Go
+## 9) Status Page Deploy (optional)
+
+Status page (`apps/status`) shows operational status, SLO summary, and incident history. See `docs/STATUS_PAGE.md`.
+
+```bash
+pnpm --filter @memorynode/status build
+# Deploy dist/ to Vercel or Cloudflare Pages (status.memorynode.ai)
+```
+
+## 10) Go/No-Go
 
 Use `docs/PROD_READY.md` as the release sign-off checklist.

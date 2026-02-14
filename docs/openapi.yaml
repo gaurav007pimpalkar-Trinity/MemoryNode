@@ -1,0 +1,817 @@
+openapi: 3.0.3
+info:
+  title: MemoryNode API
+  version: 1.0.0
+  description: MemoryNode – long-term memory layer for AI agents. This spec is auto-generated from Zod schemas in
+    apps/api/src/contracts/.
+servers:
+  - url: https://api.memorynode.ai
+    description: Production
+  - url: http://127.0.0.1:8787
+    description: Local development
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: 'Worker API key. Pass via "Authorization: Bearer <key>" or "x-api-key" header.'
+    AdminToken:
+      type: apiKey
+      in: header
+      name: x-admin-token
+      description: Master admin token for control-plane endpoints.
+  schemas:
+    MemoryInsertResponse:
+      type: object
+      properties:
+        memory_id:
+          type: string
+          example: mem_abc123
+        chunks:
+          type: integer
+          example: 3
+      required:
+        - memory_id
+        - chunks
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              example: BAD_REQUEST
+            message:
+              type: string
+              example: Validation failed
+            details:
+              type: object
+              additionalProperties:
+                type: array
+                items:
+                  type: string
+              example:
+                text:
+                  - Required
+          required:
+            - code
+            - message
+        request_id:
+          type: string
+          example: req_abc123
+      required:
+        - error
+        - request_id
+    MemoryInsertPayload:
+      type: object
+      properties:
+        user_id:
+          type: string
+          minLength: 1
+          example: user_42
+        namespace:
+          type: string
+          example: default
+        text:
+          type: string
+          minLength: 1
+          maxLength: 50000
+          example: Meeting notes from standup...
+        metadata:
+          type: object
+          additionalProperties:
+            anyOf:
+              - type: string
+              - type: number
+              - type: boolean
+              - nullable: true
+              - nullable: true
+          example:
+            project: alpha
+            priority: 1
+      required:
+        - user_id
+        - text
+    SearchResultItem:
+      type: object
+      properties:
+        chunk_id:
+          type: string
+        memory_id:
+          type: string
+        chunk_index:
+          type: integer
+        text:
+          type: string
+        score:
+          type: number
+        metadata:
+          type: object
+          additionalProperties:
+            anyOf:
+              - type: string
+              - type: number
+              - type: boolean
+              - nullable: true
+              - nullable: true
+      required:
+        - chunk_id
+        - memory_id
+        - chunk_index
+        - text
+        - score
+    SearchResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/SearchResultItem"
+        page:
+          type: integer
+        total:
+          type: integer
+        has_more:
+          type: boolean
+      required:
+        - results
+        - page
+        - total
+        - has_more
+    SearchPayload:
+      type: object
+      properties:
+        user_id:
+          type: string
+          minLength: 1
+          example: user_42
+        namespace:
+          type: string
+          example: default
+        query:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          example: project status update
+        top_k:
+          type: integer
+          minimum: 1
+          maximum: 20
+          example: 8
+        page:
+          type: integer
+          minimum: 1
+          example: 1
+        page_size:
+          type: integer
+          minimum: 1
+          maximum: 50
+          example: 10
+        filters:
+          type: object
+          properties:
+            metadata:
+              type: object
+              additionalProperties:
+                anyOf:
+                  - type: string
+                  - type: number
+                  - type: boolean
+                  - nullable: true
+                  - nullable: true
+            start_time:
+              type: string
+              example: 2025-01-01T00:00:00Z
+            end_time:
+              type: string
+              example: 2025-12-31T23:59:59Z
+      required:
+        - user_id
+        - query
+    ContextResponse:
+      type: object
+      properties:
+        context_text:
+          type: string
+        citations:
+          type: array
+          items:
+            type: object
+            properties:
+              i:
+                type: integer
+              chunk_id:
+                type: string
+              memory_id:
+                type: string
+              chunk_index:
+                type: integer
+            required:
+              - i
+              - chunk_id
+              - memory_id
+              - chunk_index
+        page:
+          type: integer
+        total:
+          type: integer
+        has_more:
+          type: boolean
+      required:
+        - context_text
+        - citations
+        - page
+        - total
+        - has_more
+    UsageResponse:
+      type: object
+      properties:
+        plan:
+          type: string
+          example: free
+        writes:
+          type: integer
+        reads:
+          type: integer
+        embeds:
+          type: integer
+        caps:
+          type: object
+          properties:
+            writes:
+              type: integer
+            reads:
+              type: integer
+            embeds:
+              type: integer
+          required:
+            - writes
+            - reads
+            - embeds
+      required:
+        - plan
+        - writes
+        - reads
+        - embeds
+        - caps
+    ExportResponse:
+      type: object
+      properties:
+        artifact_base64:
+          type: string
+        bytes:
+          type: integer
+        sha256:
+          type: string
+      required:
+        - artifact_base64
+        - bytes
+        - sha256
+    ImportResponse:
+      type: object
+      properties:
+        imported:
+          type: integer
+          example: 42
+        skipped:
+          type: integer
+          example: 0
+        errors:
+          type: integer
+          example: 0
+      required:
+        - imported
+        - skipped
+        - errors
+    ImportMode:
+      type: string
+      enum:
+        - upsert
+        - skip_existing
+        - error_on_conflict
+        - replace_ids
+        - replace_all
+    ImportPayload:
+      type: object
+      properties:
+        artifact_base64:
+          type: string
+          minLength: 1
+          example: eyJ2ZXJzaW9uIjoxLC4uLn0=
+        mode:
+          $ref: "#/components/schemas/ImportMode"
+      required:
+        - artifact_base64
+    BillingStatusResponse:
+      type: object
+      properties:
+        plan:
+          type: string
+          example: free
+        billing_enabled:
+          type: boolean
+      required:
+        - plan
+        - billing_enabled
+    BillingCheckoutPayload:
+      type: object
+      properties:
+        plan:
+          type: string
+          enum:
+            - pro
+            - team
+          example: pro
+    CreateWorkspacePayload:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          example: My Workspace
+      required:
+        - name
+    CreateApiKeyPayload:
+      type: object
+      properties:
+        workspace_id:
+          type: string
+          minLength: 1
+          example: ws_abc123
+        label:
+          type: string
+          example: production
+      required:
+        - workspace_id
+    RevokeApiKeyPayload:
+      type: object
+      properties:
+        key_id:
+          type: string
+          minLength: 1
+          example: key_abc123
+      required:
+        - key_id
+  parameters: {}
+paths:
+  /healthz:
+    get:
+      summary: Health check
+      tags:
+        - Health
+      responses:
+        "200":
+          description: Service healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - ok
+                  version:
+                    type: string
+                  build_version:
+                    type: string
+                  stage:
+                    type: string
+                  git_sha:
+                    type: string
+                required:
+                  - status
+                  - version
+  /v1/memories:
+    post:
+      summary: Ingest a memory
+      tags:
+        - Memories
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MemoryInsertPayload"
+      responses:
+        "200":
+          description: Memory ingested
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryInsertResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    get:
+      summary: List memories with pagination and filters
+      tags:
+        - Memories
+      security:
+        - BearerAuth: []
+      parameters:
+        - schema:
+            type: string
+          required: false
+          name: user_id
+          in: query
+        - schema:
+            type: string
+          required: false
+          name: namespace
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+          required: false
+          name: page
+          in: query
+        - schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+          required: false
+          name: page_size
+          in: query
+        - schema:
+            type: string
+            description: JSON-encoded metadata filter
+          required: false
+          name: metadata
+          in: query
+        - schema:
+            type: string
+          required: false
+          name: start_time
+          in: query
+        - schema:
+            type: string
+          required: false
+          name: end_time
+          in: query
+      responses:
+        "200":
+          description: Paginated list of memories
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/memories/{id}:
+    get:
+      summary: Fetch a single memory by ID
+      tags:
+        - Memories
+      security:
+        - BearerAuth: []
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Memory object
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Memory not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      summary: Delete a memory
+      tags:
+        - Memories
+      security:
+        - BearerAuth: []
+      parameters:
+        - schema:
+            type: string
+          required: true
+          name: id
+          in: path
+      responses:
+        "200":
+          description: Memory deleted
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Memory not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/search:
+    post:
+      summary: Hybrid search (vector + full-text + RRF)
+      tags:
+        - Retrieval
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SearchPayload"
+      responses:
+        "200":
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/context:
+    post:
+      summary: Prompt-ready context with citations
+      tags:
+        - Retrieval
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SearchPayload"
+      responses:
+        "200":
+          description: Context text and citations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContextResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/usage/today:
+    get:
+      summary: Usage counters and effective plan caps for today
+      tags:
+        - Usage
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Current usage
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UsageResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/export:
+    post:
+      summary: Export memories (JSON or ZIP)
+      tags:
+        - Export / Import
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Export artifact
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExportResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/import:
+    post:
+      summary: Import memories from export artifact
+      tags:
+        - Export / Import
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ImportPayload"
+      responses:
+        "200":
+          description: Import result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/billing/status:
+    get:
+      summary: Current billing status and plan
+      tags:
+        - Billing
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Billing status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BillingStatusResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/billing/checkout:
+    post:
+      summary: Create PayU checkout session
+      tags:
+        - Billing
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BillingCheckoutPayload"
+      responses:
+        "200":
+          description: Checkout URL or form fields
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/billing/portal:
+    post:
+      summary: Legacy billing portal (returns 410 Gone)
+      tags:
+        - Billing
+      security:
+        - BearerAuth: []
+      responses:
+        "410":
+          description: Gone – legacy Stripe portal removed
+  /v1/billing/webhook:
+    post:
+      summary: PayU webhook callback
+      tags:
+        - Billing
+      responses:
+        "200":
+          description: Webhook processed
+        "400":
+          description: Invalid webhook payload or signature
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/workspaces:
+    post:
+      summary: Create a workspace (admin only)
+      tags:
+        - Admin
+      security:
+        - AdminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateWorkspacePayload"
+      responses:
+        "200":
+          description: Workspace created
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/api-keys:
+    post:
+      summary: Create an API key for a workspace (admin only)
+      tags:
+        - Admin
+      security:
+        - AdminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateApiKeyPayload"
+      responses:
+        "200":
+          description: API key created
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    get:
+      summary: List masked API keys for a workspace (admin only)
+      tags:
+        - Admin
+      security:
+        - AdminToken: []
+      parameters:
+        - schema:
+            type: string
+            example: ws_abc123
+          required: true
+          name: workspace_id
+          in: query
+      responses:
+        "200":
+          description: List of masked API keys
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /v1/api-keys/revoke:
+    post:
+      summary: Revoke an API key (admin only)
+      tags:
+        - Admin
+      security:
+        - AdminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RevokeApiKeyPayload"
+      responses:
+        "200":
+          description: API key revoked
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"

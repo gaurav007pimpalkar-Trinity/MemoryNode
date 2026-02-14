@@ -5,8 +5,8 @@ Canonical deploy/rollback workflow:
 - `docs/PROD_READY.md`
 
 ## Vars vs Secrets
-- Safe `[vars]` (checked into `apps/api/wrangler.toml`): `SUPABASE_URL`, `SUPABASE_MODE`, `EMBEDDINGS_MODE`, `ENVIRONMENT`, `RATE_LIMIT_MODE`, `ALLOWED_ORIGINS`, `PUBLIC_APP_URL`, `STRIPE_PRICE_PRO`, `STRIPE_PRICE_TEAM`, optional `STRIPE_PORTAL_CONFIGURATION_ID`, `STRIPE_SUCCESS_PATH`, `STRIPE_CANCEL_PATH`.
-- Secrets (set with `wrangler secret put NAME` in Cloudflare, never in `[vars]`): `SUPABASE_SERVICE_ROLE_KEY`, `OPENAI_API_KEY`, `API_KEY_SALT`, `MASTER_ADMIN_TOKEN`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`.
+- Safe `[vars]` (checked into `apps/api/wrangler.toml`): `SUPABASE_URL`, `SUPABASE_MODE`, `EMBEDDINGS_MODE`, `ENVIRONMENT`, `RATE_LIMIT_MODE`, `ALLOWED_ORIGINS`, `PUBLIC_APP_URL`, `PAYU_BASE_URL`, `PAYU_VERIFY_URL`, optional `PAYU_SUCCESS_PATH`, `PAYU_CANCEL_PATH`, `PAYU_PRO_AMOUNT`, `PAYU_PRODUCT_INFO`, `PAYU_CURRENCY`.
+- Secrets (set with `wrangler secret put NAME` in Cloudflare, never in `[vars]`): `SUPABASE_SERVICE_ROLE_KEY`, `OPENAI_API_KEY`, `API_KEY_SALT`, `MASTER_ADMIN_TOKEN`, `PAYU_MERCHANT_KEY`, `PAYU_MERCHANT_SALT`, optional `PAYU_WEBHOOK_SECRET`.
 - Reason: Cloudflare overwrites dashboard secrets with values from `[vars]` on deploy. Keeping secrets out of `[vars]` preserves existing secret values.
 
 ## Required bindings

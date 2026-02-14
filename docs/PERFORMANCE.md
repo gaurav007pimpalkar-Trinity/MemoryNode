@@ -30,6 +30,6 @@ The k6 script uses small payloads and default options (`vus:5`, `duration:30s`, 
 - Inspect DB load and query plans; add indexes for hot filters.
 
 ## If error rate is high
-- Examine structured logs (`http_request`, `stripe_webhook_error`).
+- Examine structured logs (`request_completed`, `request_failed`, `webhook_failed`, `billing_endpoint_error`). See `docs/OBSERVABILITY.md` for full event catalog.
 - Verify secrets/config (`pnpm check:config` with CHECK_ENV=production).
 - Ensure rate limit DO binding and Supabase connectivity.

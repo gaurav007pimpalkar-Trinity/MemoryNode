@@ -6,8 +6,8 @@
 | `API_KEY_SALT` | Cloudflare Worker secret (prod/staging); local `.env.gate`/`.env.prod.smoke` for checks | API key hashing; must match `app_settings.api_key_salt` in DB | Rotate only if compromised; must align DB `app_settings.api_key_salt` + re-issue keys |
 | `MASTER_ADMIN_TOKEN` | Cloudflare Worker secret; local env for admin scripts | Admin plane (`/v1/workspaces`, `/v1/api-keys`); deploy scripts | Rotate if leaked; update all operators’ envs |
 | `OPENAI_API_KEY` | Cloudflare Worker secret; local env for smoke when `EMBEDDINGS_MODE=openai` | Embeddings generation | Rotate per OpenAI best practices; ensure `EMBEDDINGS_MODE=openai` |
-| `STRIPE_SECRET_KEY` | Cloudflare Worker secret (prod/staging); local for billing tests | Billing endpoints (checkout/portal/webhook) | Rotate via Stripe dashboard; update Worker secret; verify webhook after |
-| `STRIPE_WEBHOOK_SECRET` | Cloudflare Worker secret; local for webhook tests | Stripe webhook verification | Rotate in Stripe dashboard; update Worker secret; replay test event |
+| `PAYU_MERCHANT_KEY` | Cloudflare Worker secret (prod/staging); local for billing tests | PayU checkout and webhook hash verification | Rotate via PayU merchant dashboard; update Worker secret; verify webhook after |
+| `PAYU_MERCHANT_SALT` | Cloudflare Worker secret; local for webhook tests | PayU webhook/callback hash verification | Rotate in PayU merchant dashboard; update Worker secret; replay test callback |
 | `CLOUDFLARE_API_TOKEN` | Local/CI (optional alternative to wrangler login) | Deploy via wrangler | Rotate if leaked; ensure token has Workers write scope |
 | `SUPABASE_SERVICE_ROLE_KEY` | Cloudflare Worker secret; local for DB scripts | Supabase service access from Worker | Rotate via Supabase; update Worker secret; re-run smoke |
 | `SUPABASE_URL` | Cloudflare Worker var/secret; local for smoke | Supabase endpoint | Update if project URL changes; align with DB URLs |
@@ -19,10 +19,22 @@
 3) Confirm rollback: `curl -s https://<BASE_URL>/healthz` should show `status: "ok"` and `version/BUILD_VERSION` matching the rolled-back deploy.
 4) If needed, revert DB changes manually (migrations are forward-only; prefer hotfix migration rather than reversal).
 
+## B.1) Error Budget Policy
+
+When the 28-day rolling error budget is exhausted (see `docs/OBSERVABILITY.md` §4 and Appendix A):
+
+1. **Freeze** non-essential releases.
+2. **Focus** on reliability and root-cause.
+3. **Resume** normal cadence only after budget recovers.
+
+Details: `docs/INCIDENT_PROCESS.md` § Error Budget Policy.
+
+---
+
 ## C) Incident Checklist
 - Rate limit DO failure: 500 errors mentioning `RATE_LIMIT_DO` missing; fix by ensuring wrangler binding exists per env and redeploy.
 - Supabase connectivity issues: 500s with DB errors; verify `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`; run `BASE_URL=... API_KEY=... pnpm release:validate` to confirm core API paths.
-- Stripe webhook failures: look for `webhook_failed`, `billing_webhook_signature_invalid`, and `billing_webhook_workspace_not_found`; check `stripe_webhook_events` lifecycle columns from `infra/sql/019_webhook_hardening.sql` and Cloudflare logs; replay from Stripe dashboard after fixing secrets.
+- PayU webhook failures: look for `webhook_failed`, `billing_webhook_signature_invalid`, and `billing_webhook_workspace_not_found`; check `payu_webhook_events` and Cloudflare logs; replay or use `POST /admin/webhooks/reprocess` after fixing secrets (see docs/BILLING_RUNBOOK.md).
 - For billing-specific incident procedures, use `docs/BILLING_RUNBOOK.md`.
 
 ## C.1) 429 / 413 Handling

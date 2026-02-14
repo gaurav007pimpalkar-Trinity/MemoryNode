@@ -41,14 +41,15 @@ Export / Import
 Admin (control plane)
 - `POST /v1/workspaces` – create workspace (admin token required).
 - `POST /v1/api-keys` – create API key for workspace.
-- `GET /v1/api-keys?workspace_id=...` – list masked keys.
-- `POST /v1/api-keys/revoke` – revoke API key.
+- `GET /v1/api-keys?workspace_id=...` – list masked keys (includes `created_at`, `revoked_at`, `last_used_at`, `last_used_ip` when available).
+- `POST /v1/api-keys/revoke` – revoke API key (body: `{ api_key_id }`).
+- **Rotation:** Create a new key via `POST /v1/api-keys`, then revoke the old key via `POST /v1/api-keys/revoke` after a grace period (e.g. 24 h) so clients can switch. “If you lose your key, you rotate” — no key recovery; rotation is the supported path.
 
 Billing
 - `GET /v1/billing/status`
-- `POST /v1/billing/checkout` – Body `{ plan?: "pro"|"team" }`, returns Stripe Checkout URL.
-- `POST /v1/billing/portal` – returns Stripe Billing Portal URL.
-- `POST /v1/billing/webhook` – Stripe webhook (raw body, signature verified).
+- `POST /v1/billing/checkout` – Body `{ plan?: "pro"|"team" }`, returns PayU hosted checkout (URL or POST form fields).
+- `POST /v1/billing/portal` – returns `410 Gone` (legacy Stripe portal removed; PayU billing is platform-only via checkout/webhooks).
+- `POST /v1/billing/webhook` – PayU callback (raw body, hash verified with PAYU_MERCHANT_SALT/PAYU_MERCHANT_KEY).
 
 Plans & Caps (defaults)
 - free: writes 200 / reads 500 / embeds 2000 per day  
@@ -61,5 +62,9 @@ Dashboard/Supabase RPCs (workspace auth)
 
 SDK
 - `addMemory`, `search`, `context`, `listMemories`, `getMemory`, `deleteMemory`, `exportMemories`, `importMemories`, `getUsageToday`, `createWorkspace`, `createApiKey`, `listApiKeys`, `revokeApiKey`.
+
+Machine-readable spec
+- OpenAPI 3.0: `docs/openapi.yaml` (generated from Zod schemas in `apps/api/src/contracts/`).
+- To regenerate: `pnpm openapi:gen`. CI runs `pnpm openapi:check` to prevent drift.
 
 See `docs/QUICKSTART.md` for setup and `docs/LAUNCH_CHECKLIST.md` for deployment steps.
