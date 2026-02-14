@@ -6,7 +6,10 @@ alter table if exists api_keys
 comment on column api_keys.last_used_at is 'Last time this key was used for API auth';
 comment on column api_keys.last_used_ip is 'Last client IP that used this key (CF-Connecting-IP or X-Forwarded-For)';
 
--- Redefine list_api_keys to include last_used_at, last_used_ip (columns now exist)
+-- Redefine list_api_keys to include last_used_at, last_used_ip (columns now exist).
+-- Must DROP first: PostgreSQL does not allow changing return type with CREATE OR REPLACE.
+drop function if exists list_api_keys(uuid);
+
 create or replace function list_api_keys(p_workspace_id uuid)
 returns table (
   id uuid,
