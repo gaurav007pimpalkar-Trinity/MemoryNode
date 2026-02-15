@@ -9,15 +9,12 @@
 - `docs` – documentation.
 - `docs/RELEASE_RUNBOOK.md` – canonical staging/canary/prod release, validation, rollback, and kill switches.
 - `docs/PROD_READY.md` – final go/no-go checklist.
-- `docs/LAUNCH_CHECKLIST.md` – pointer to canonical release checklist (`docs/PROD_READY.md`).
-- `docs/LAUNCH_RUNBOOK.md` – pointer to canonical release runbook (`docs/RELEASE_RUNBOOK.md`).
 - `docs/ALERTS.md` – lightweight monitoring + alert thresholds and Cloudflare setup notes.
 - `docs/BETA_ONBOARDING.md` – 10–15 minute beta onboarding guide for first successful calls.
 - `docs/TROUBLESHOOTING_BETA.md` – beta symptom->cause->fix playbook and support template.
 - `docs/QUICKSTART.md` – 10-minute developer quickstart (envs, migrations, dev servers, curls).
 - `docs/API_REFERENCE.md` – endpoint reference (Worker API, admin, billing, plans).
-- `docs/IMPROVEMENTS.md` – what’s wrong in the repo and improvements to make it invincible and smart.
-- `docs/IMPROVEMENT_PLAN.md` – phased plan to fix all wrongs and implement all improvements (with tasks and checklists).
+- `docs/IMPROVEMENT_PLAN.md` – phased plan to fix wrongs and implement improvements (with tasks and checklists).
 - `docs/BEST_IN_MARKET_PLAN.md` – CEO/CTO strategic plan to make MemoryNode best-in-market (trust breakers, moat, observability, retrieval cockpit).
 
 ## Documentation Map (Reading Order)
@@ -57,10 +54,8 @@ Follow this path depending on what you need:
 
 ### Reference / historical:
 
-- `docs/LAUNCH_CHECKLIST.md` — pointer to `PROD_READY.md`
-- `docs/LAUNCH_RUNBOOK.md` — pointer to `RELEASE_RUNBOOK.md`
 - `docs/BETA_ONBOARDING.md` — beta onboarding guide
-- `docs/IMPROVEMENTS.md` / `docs/IMPROVEMENT_PLAN.md` — improvement tracking
+- `docs/IMPROVEMENT_PLAN.md` — improvement tracking
 
 ## Billing (PayU)
 
@@ -95,6 +90,19 @@ Follow this path depending on what you need:
 - **Alert definitions**: see `docs/ALERTS.md` for alert thresholds mapped 1:1 to golden metrics.
 - Product event names (persisted to `product_events`): `workspace_created`, `api_key_created`, `first_ingest_success`, `first_search_success`, `first_context_success`, `cap_exceeded`, `checkout_started`, `upgrade_activated`.
 - Structured log event names: `request_completed` (with `route_group`), `request_failed`, `cap_exceeded`, `embed_request`, `search_request`, `db_rpc`, `audit_log`, `webhook_received`, `webhook_verified`, `webhook_processed`, `webhook_replayed`, `webhook_deferred`, `webhook_reconciled`, `webhook_failed`, `billing_webhook_signature_invalid`, `billing_webhook_workspace_not_found`, `billing_endpoint_error`.
+
+## Quick path (zero → one memory + one search, &lt;15 min)
+
+```bash
+pnpm install
+cp .env.example .env && cp apps/api/.dev.vars.template apps/api/.dev.vars   # fill SUPABASE_*, API_KEY_SALT, MASTER_ADMIN_TOKEN, EMBEDDINGS_MODE=stub
+DATABASE_URL=postgres://... pnpm db:migrate
+pnpm dev:api   # terminal 1
+pnpm --filter @memorynode/dashboard dev   # terminal 2 → dashboard, create workspace + API key
+# curl ingest + search (see docs/QUICKSTART.md §7)
+```
+
+Full steps: `docs/QUICKSTART.md`. First-run flow: `docs/FIRST_RUN_FLOW.md`.
 
 ## Getting Started
 1) Install dependencies:
@@ -250,7 +258,7 @@ It checks `/healthz`, validates authenticated usage/search/context paths, and ve
    - `MASTER_ADMIN_TOKEN`
    - `EMBEDDINGS_MODE` (`openai` or `stub`; use `stub` for local dev to avoid OpenAI calls)
 
-Migration manifest (CI-checked): `MIGRATIONS_TOTAL=27; MIGRATIONS_LATEST=025_api_keys_last_used.sql`
+Migration manifest (CI-checked): `MIGRATIONS_TOTAL=28; MIGRATIONS_LATEST=026_retrieval_cockpit.sql`
 
 ## Admin & Bootstrap
 - Admin endpoints require header `x-admin-token: $MASTER_ADMIN_TOKEN`.

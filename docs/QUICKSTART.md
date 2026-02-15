@@ -62,7 +62,7 @@ Print the exact ordered migration manifest from filesystem:
 pnpm migrations:list
 ```
 
-Migration manifest (CI-checked): `MIGRATIONS_TOTAL=27; MIGRATIONS_LATEST=025_api_keys_last_used.sql`
+Migration manifest (CI-checked): `MIGRATIONS_TOTAL=28; MIGRATIONS_LATEST=026_retrieval_cockpit.sql`
 
 ## 4) Run the API locally
 ```bash

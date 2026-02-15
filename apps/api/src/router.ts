@@ -158,6 +158,53 @@ export interface RouterHandlers {
     auditCtx: AuditCtx,
     deps: HandlerDeps,
   ) => Promise<Response>;
+  handleCreateEvalSet: (
+    request: Request,
+    env: Env,
+    supabase: SupabaseClient,
+    auditCtx: AuditCtx,
+    requestId: string,
+    deps: HandlerDeps,
+  ) => Promise<Response>;
+  handleAddEvalItem: (
+    request: Request,
+    env: Env,
+    supabase: SupabaseClient,
+    evalSetId: string,
+    auditCtx: AuditCtx,
+    requestId: string,
+    deps: HandlerDeps,
+  ) => Promise<Response>;
+  handleListEvalSets: (
+    request: Request,
+    env: Env,
+    supabase: SupabaseClient,
+    auditCtx: AuditCtx,
+    deps: HandlerDeps,
+  ) => Promise<Response>;
+  handleRunEval: (
+    request: Request,
+    env: Env,
+    supabase: SupabaseClient,
+    auditCtx: AuditCtx,
+    requestId: string,
+    deps: HandlerDeps,
+  ) => Promise<Response>;
+  handleListSearchHistory: (
+    request: Request,
+    env: Env,
+    supabase: SupabaseClient,
+    auditCtx: AuditCtx,
+    deps: HandlerDeps,
+  ) => Promise<Response>;
+  handleReplaySearch: (
+    request: Request,
+    env: Env,
+    supabase: SupabaseClient,
+    auditCtx: AuditCtx,
+    requestId: string,
+    deps: HandlerDeps,
+  ) => Promise<Response>;
 }
 
 /** Injected per-request deps (e.g. bound jsonResponse). Passed to every handler. */
@@ -269,6 +316,30 @@ export async function route(
 
   if (request.method === "POST" && url.pathname === "/v1/import") {
     return handlers.handleImport(request, env, supabase, auditCtx, handlerDeps);
+  }
+
+  if (request.method === "GET" && url.pathname === "/v1/search/history") {
+    return handlers.handleListSearchHistory(request, env, supabase, auditCtx, handlerDeps);
+  }
+  if (request.method === "POST" && url.pathname === "/v1/search/replay") {
+    return handlers.handleReplaySearch(request, env, supabase, auditCtx, requestId, handlerDeps);
+  }
+
+  if (request.method === "POST" && url.pathname === "/v1/eval/sets") {
+    return handlers.handleCreateEvalSet(request, env, supabase, auditCtx, requestId, handlerDeps);
+  }
+  if (request.method === "GET" && url.pathname === "/v1/eval/sets") {
+    return handlers.handleListEvalSets(request, env, supabase, auditCtx, handlerDeps);
+  }
+  const evalSetItemMatch = url.pathname.match(/^\/v1\/eval\/sets\/([^/]+)\/items$/);
+  if (evalSetItemMatch && request.method === "POST") {
+    const evalSetId = evalSetItemMatch[1];
+    if (UUID_RE.test(evalSetId)) {
+      return handlers.handleAddEvalItem(request, env, supabase, evalSetId, auditCtx, requestId, handlerDeps);
+    }
+  }
+  if (request.method === "POST" && url.pathname === "/v1/eval/run") {
+    return handlers.handleRunEval(request, env, supabase, auditCtx, requestId, handlerDeps);
   }
 
   return null;

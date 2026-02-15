@@ -1,0 +1,28 @@
+# Cursor AI Repository Rules
+
+GOAL
+Preserve product behavior, logic, and APIs at all times.
+
+ABSOLUTE DO-NOTs
+- Do not change business logic or control flow
+- Do not change public APIs or request/response formats
+- Do not rename or delete existing functions, classes, files, or exports
+- Do not introduce new dependencies
+- Do not modify environment variables or configuration keys
+
+ALLOWED CHANGES (SAFE ONLY)
+- Fix compiler or type errors without changing runtime behavior
+- Fix lint issues that do not affect logic
+- Remove unused imports or unreachable dead code (only if provable)
+- Add missing types or annotations
+- Fix clearly broken typings
+
+EDITING RULES
+- Prefer minimal, localized changes
+- Limit edits to files explicitly mentioned or clearly required
+- Avoid multi-file edits unless strictly necessary
+- If unsure about safety, do NOT apply the change
+
+WORKFLOW
+- Scan before editing unfamiliar code
+- Summarize what was changed and what was intentionally not changed

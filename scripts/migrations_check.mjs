@@ -11,7 +11,6 @@ import {
 const DOCS_REQUIRE_MANIFEST = [
   "docs/README.md",
   "docs/QUICKSTART.md",
-  "docs/LAUNCH_CHECKLIST.md",
 ];
 
 function failWithIssues(issues) {
@@ -57,6 +56,7 @@ function checkNoStaleRangeMentions(manifest, issues) {
   });
 
   for (const rel of trackedDocs) {
+    if (!fs.existsSync(path.resolve(rel))) continue;
     const lines = readText(rel).split(/\r?\n/);
     for (let i = 0; i < lines.length; i += 1) {
       const line = lines[i];

@@ -7,7 +7,8 @@ Auth:
 - Admin control plane: `x-admin-token: <MASTER_ADMIN_TOKEN>` (workspace/api-key management).
 
 Health
-- `GET /healthz` → `{ status: "ok", version, build_version, stage?, git_sha? }`
+- `GET /healthz` → `{ status: "ok", version, build_version, embedding_model, stage?, git_sha? }`
+  - `embedding_model`: `text-embedding-3-small` (OpenAI) or `stub` (dev)
 
 Response headers:
 - Every response includes `x-request-id`.
@@ -26,7 +27,12 @@ Memories
 
 Retrieval
 - `POST /v1/search` – hybrid search (vector + full-text + RRF)  
-  Body: `{ user_id, query, namespace?, top_k?, page?, page_size?, filters?{ metadata?, start_time?, end_time? } }`
+  Body: `{ user_id, query, namespace?, top_k?, page?, page_size?, explain?, filters? }`  
+  With `explain: true`, each result includes `_explain: { rrf_score, match_sources, vector_score?, text_score? }`  
+  Header `X-Save-History: true` saves query+results for replay
+- `GET /v1/search/history` – list saved queries (query, params, created_at)
+- `POST /v1/search/replay` – re-run a saved query; returns `{ previous, current }` for comparison  
+  Body: `{ query_id }`
 - `POST /v1/context` – prompt-ready context + citations  
   Body: same as search  
   Returns: `{ context_text, citations:[{i,chunk_id,memory_id,chunk_index}], page, total, has_more }`
@@ -56,6 +62,13 @@ Plans & Caps (defaults)
 - pro: writes 2000 / reads 5000 / embeds 20000  
 - team: writes 10000 / reads 20000 / embeds 100000
 
+Retrieval quality (Phase 5)
+- `GET /v1/eval/sets` – list eval sets
+- `POST /v1/eval/sets` – create eval set. Body: `{ name }`
+- `POST /v1/eval/sets/:id/items` – add eval item. Body: `{ query, expected_memory_ids: uuid[] }`
+- `POST /v1/eval/run` – run evaluation. Body: `{ eval_set_id, user_id, namespace? }`  
+  Returns `{ items, summary: { avg_precision_at_k, avg_recall } }`
+
 Dashboard/Supabase RPCs (workspace auth)
 - `create_workspace`, `create_api_key`, `list_api_keys`, `revoke_api_key`
 - Invites & roles: `create_invite`, `revoke_invite`, `accept_invite`, `update_member_role`, `remove_member`
@@ -67,4 +80,4 @@ Machine-readable spec
 - OpenAPI 3.0: `docs/openapi.yaml` (generated from Zod schemas in `apps/api/src/contracts/`).
 - To regenerate: `pnpm openapi:gen`. CI runs `pnpm openapi:check` to prevent drift.
 
-See `docs/QUICKSTART.md` for setup and `docs/LAUNCH_CHECKLIST.md` for deployment steps.
+See `docs/QUICKSTART.md` for setup and `docs/RELEASE_RUNBOOK.md` for deployment steps.

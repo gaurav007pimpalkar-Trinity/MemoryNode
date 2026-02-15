@@ -14,7 +14,10 @@ with required_tables(relname) as (
     ('payu_transactions'),
     ('usage_daily'),
     ('workspace_entitlements'),
-    ('workspaces')
+    ('workspaces'),
+    ('eval_sets'),
+    ('eval_items'),
+    ('search_query_history')
 ),
 table_state as (
   select

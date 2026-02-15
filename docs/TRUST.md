@@ -21,6 +21,7 @@
 | [OBSERVABILITY.md](./OBSERVABILITY.md) | SLO definitions, golden metrics, health view |
 | [ALERTS.md](./ALERTS.md) | Alert rules, triage playbooks |
 | [OPERATIONS.md](./OPERATIONS.md) | Secrets inventory, rollback, incident checklist |
+| [PERFORMANCE.md](./PERFORMANCE.md) | Vector search latency, index tuning, query caps |
 
 ---
 
@@ -35,7 +36,5 @@
 
 | Document | Description |
 |----------|-------------|
-| [DATA_RETENTION.md](./DATA_RETENTION.md) | Data deletion, retention policy, audit trail (create if not present) |
+| [DATA_RETENTION.md](./DATA_RETENTION.md) | Data deletion, retention policy, audit trail |
 | [TRUST_CHANGELOG.md](./TRUST_CHANGELOG.md) | Security and ops improvements by date |
-
-*Note: DATA_RETENTION.md and TRUST_CHANGELOG.md are created as part of public proof artifacts. Until then, see SECURITY.md for data handling.*

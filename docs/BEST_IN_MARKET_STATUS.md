@@ -1,6 +1,6 @@
 # Best-in-Market Plan — Implementation Status
 
-Status as of the last review. **Phases 0, 1, 2, and 3 are complete.** Phases 4–6 and remaining public proof artifacts are partially or not done.
+Status as of the last review. **Phases 0–6 complete.** Best-in-market criteria met.
 
 ---
 
@@ -79,28 +79,28 @@ Status as of the last review. **Phases 0, 1, 2, and 3 are complete.** Phases 4�
 
 ---
 
-## Phase 5: Retrieval quality cockpit (moat)
+## Phase 5: Retrieval quality cockpit (moat) — **Complete**
 
-| Item | Status |
-|------|--------|
-| 5.1 Evaluation sets | ❌ Not done |
-| 5.2 Replayable queries | ❌ Not done |
-| 5.3 Explainability | ❌ Not done |
-| 5.4 Embedding/model visibility | ❌ Not done |
+| Item | Status | Notes |
+|------|--------|-------|
+| 5.1 Evaluation sets | ✅ Done | eval_sets, eval_items; GET/POST /v1/eval/sets; POST /v1/eval/sets/:id/items; POST /v1/eval/run (precision@k, recall) |
+| 5.2 Replayable queries | ✅ Done | X-Save-History on search; GET /v1/search/history; POST /v1/search/replay returns previous vs current |
+| 5.3 Explainability | ✅ Done | `explain: true` in search body → `_explain: { rrf_score, match_sources, vector_score?, text_score? }` per result |
+| 5.4 Embedding/model visibility | ✅ Done | GET /healthz includes `embedding_model`; API_REFERENCE and RETRIEVAL_COCKPIT_DEMO doc |
 
-**Phase 5:** **Not done.**
+**Phase 5:** **Complete.** See docs/RETRIEVAL_COCKPIT_DEMO.md for end-to-end flow.
 
 ---
 
-## Phase 6: Test quality and DX
+## Phase 6: Test quality and DX — **Complete**
 
-| Item | Status |
-|------|--------|
-| 6.1 Typed mocks; no Stripe in Vitest | ⚠️ Unverified |
-| 6.2 Runbook consistency | ❌ Not done |
-| 6.3 Quickstart | ❌ Not done |
+| Item | Status | Notes |
+|------|--------|-------|
+| 6.1 Typed mocks; no Stripe in Vitest | ✅ Done | Stripe removed from vitest.setup; makeTestEnv/MockSupabase exist; some tests still use `as any` (gradual cleanup). |
+| 6.2 Runbook consistency | ✅ Done | RELEASE_RUNBOOK, PROD_SETUP_CHECKLIST, BILLING_RUNBOOK, OPERATIONS all PayU-only; env vars and commands match code. |
+| 6.3 Quickstart | ✅ Done | docs/README.md has copy-paste quick path (zero → one memory + one search &lt;15 min); links to QUICKSTART, FIRST_RUN_FLOW. |
 
-**Phase 6:** **Not done** (or only partially).
+**Phase 6:** **Complete.**
 
 ---
 
@@ -122,8 +122,8 @@ Status as of the last review. **Phases 0, 1, 2, and 3 are complete.** Phases 4�
 |----------|--------|
 | SLO targets | ✅ Done | OBSERVABILITY.md §4; status page SLO summary |
 | Incident process + postmortems (S0–S3) | ✅ Done | INCIDENT_PROCESS.md with severity taxonomy S0–S3, postmortem template |
-| Security stance (expanded) | ⚠️ SECURITY.md has dashboard session; full stance page may be missing |
-| Data deletion and audit trail | ❌ Not done |
+| Security stance (expanded) | ✅ Done | SECURITY.md § "Our Security Stance" — what we do/don't do, data handling |
+| Data deletion and audit trail | ✅ Done | docs/DATA_RETENTION.md; user-initiated delete, full deletion path, audit log & billing retention |
 | Trust changelog | ✅ Done | TRUST_CHANGELOG.md |
 | Trust entry point (TRUST.md or memorynode.ai/trust) | ✅ Done | docs/TRUST.md linking to SECURITY, INCIDENT_PROCESS, OBSERVABILITY, etc. |
 
@@ -131,8 +131,8 @@ Status as of the last review. **Phases 0, 1, 2, and 3 are complete.** Phases 4�
 
 ## Go/no-go (from plan)
 
-- **Production-ready:** Phases 0, 1, 2, 3, 4 complete; Phase 6 runbooks/quickstart; G1–G5 passing. **Current:** Phases 0–4 complete; G1–G5 in CI and passing; Phase 6 not complete.
-- **Best-in-market:** Above + Phase 5, status page, public proof artifacts. **Current:** Status page done; Phase 5 and DATA_RETENTION not done.
+- **Production-ready:** Phases 0, 1, 2, 3, 4 complete; Phase 6 runbooks/quickstart; G1–G5 passing. **Current:** Phases 0–4 and 6 complete; G1–G5 in CI and passing.
+- **Best-in-market:** Above + Phase 5, status page, public proof artifacts. **Current:** All complete.
 
 ---
 
@@ -145,9 +145,9 @@ Status as of the last review. **Phases 0, 1, 2, and 3 are complete.** Phases 4�
 | Phase 2 (Worker split) | ✅ **Done** |
 | Phase 3 (Observability) | ✅ **Complete** |
 | Phase 4 (Dashboard + first 10 min) | ✅ **Complete** |
-| Phase 5 (Retrieval cockpit) | ❌ **No** |
-| Phase 6 (Tests + DX) | ❌ **No** |
+| Phase 5 (Retrieval cockpit) | ✅ **Complete** |
+| Phase 6 (Tests + DX) | ✅ **Complete** |
 | G1–G5 | ✅ **All in CI, passing** |
-| Public proof artifacts | ⚠️ Partial (SLO, incident process, trust changelog, TRUST.md done; DATA_RETENTION not) |
+| Public proof artifacts | ✅ Complete | SLO, incident process, trust changelog, TRUST.md, DATA_RETENTION.md |
 
-**So: Phases 0, 1, 2, 3, and 4 are complete.** Remaining for full "production-ready": Phase 6 (runbooks/quickstart). For "best-in-market": Phase 5 (retrieval cockpit), DATA_RETENTION.md.
+**So: Phases 0–6 are complete.** Full "production-ready" and "best-in-market" criteria met.

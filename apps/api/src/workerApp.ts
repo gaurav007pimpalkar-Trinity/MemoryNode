@@ -54,6 +54,7 @@ import { createExportHandlers, type ExportHandlerDeps } from "./handlers/export.
 import { createImportHandlers, type ImportHandlerDeps, type ImportMode } from "./handlers/import.js";
 import { createWorkspacesHandlers, type WorkspacesHandlerDeps } from "./handlers/workspaces.js";
 import { createApiKeysHandlers, type ApiKeysHandlerDeps } from "./handlers/apiKeys.js";
+import { createEvalHandlers, type EvalHandlerDeps } from "./handlers/eval.js";
 import {
   createDashboardSession,
   deleteDashboardSession,
@@ -121,6 +122,7 @@ interface NormalizedSearchParams {
   top_k: number;
   page: number;
   page_size: number;
+  explain?: boolean;
   filters: {
     metadata?: MetadataFilter;
     start_time?: string;
@@ -1092,6 +1094,8 @@ function resolveBodyLimit(method: string, path: string, env: Env): number {
   if (method === "POST" && path === "/v1/import") return Number(env.MAX_IMPORT_BYTES ?? DEFAULT_MAX_IMPORT_BYTES);
   if (method === "POST" && (path === "/v1/workspaces" || path === "/v1/api-keys" || path === "/v1/api-keys/revoke"))
     return Math.min(base, ADMIN_MAX_BODY_BYTES);
+  if (method === "POST" && (path === "/v1/eval/run" || path === "/v1/search/replay"))
+    return Math.min(base, SEARCH_MAX_BODY_BYTES);
   return base;
 }
 
@@ -1116,6 +1120,11 @@ const KNOWN_PATH_ALLOWED_METHODS: Array<{ test: (path: string) => boolean; allow
   { test: (p) => p === "/admin/webhooks/reprocess", allow: "POST" },
   { test: (p) => p === "/v1/dashboard/session", allow: "POST" },
   { test: (p) => p === "/v1/dashboard/logout", allow: "POST" },
+  { test: (p) => p === "/v1/search/history", allow: "GET" },
+  { test: (p) => p === "/v1/search/replay", allow: "POST" },
+  { test: (p) => p === "/v1/eval/sets", allow: "GET, POST" },
+  { test: (p) => /^\/v1\/eval\/sets\/[^/]+\/items$/.test(p), allow: "POST" },
+  { test: (p) => p === "/v1/eval/run", allow: "POST" },
 ];
 
 /** If path is known but method is not allowed, returns Allow header value; otherwise null (use 404). */
@@ -1167,10 +1176,14 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         const version = buildVersion || "dev";
         const stage = (env.ENVIRONMENT ?? env.NODE_ENV ?? "").trim();
         const gitSha = (env.GIT_SHA ?? "").trim();
+        const embeddingsMode = (env.EMBEDDINGS_MODE ?? "openai").toLowerCase();
+        const embeddingModel =
+          embeddingsMode === "stub" ? "stub" : "text-embedding-3-small";
         response = jsonResponse({
           status: "ok",
           version,
           build_version: version,
+          embedding_model: embeddingModel,
           ...(gitSha ? { git_sha: gitSha } : {}),
           ...(stage ? { stage } : {}),
         });
@@ -1270,7 +1283,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         return response;
       }
 
-      const handlerDeps: HandlerDeps & MemoryHandlerDeps & SearchHandlerDeps & UsageHandlerDeps & BillingHandlerDeps & WebhookHandlerDeps & AdminHandlerDeps & ExportHandlerDeps & ImportHandlerDeps & WorkspacesHandlerDeps & ApiKeysHandlerDeps = {
+      const handlerDeps: HandlerDeps & MemoryHandlerDeps & SearchHandlerDeps & UsageHandlerDeps & BillingHandlerDeps & WebhookHandlerDeps & AdminHandlerDeps & ExportHandlerDeps & ImportHandlerDeps & WorkspacesHandlerDeps & ApiKeysHandlerDeps & EvalHandlerDeps = {
         jsonResponse,
         safeParseJson,
         chunkText,
@@ -1341,6 +1354,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const importHandlers = createImportHandlers(handlerDeps, defaultImportHandlerDeps);
       const workspacesHandlers = createWorkspacesHandlers(handlerDeps, defaultWorkspacesHandlerDeps);
       const apiKeysHandlers = createApiKeysHandlers(handlerDeps, defaultApiKeysHandlerDeps);
+      const evalHandlers = createEvalHandlers(handlerDeps, defaultEvalHandlerDeps);
       const routed = await route(request, env, supabase, url, auditCtx, requestId, {
         handlers: {
           ...memoryHandlers,
@@ -1354,6 +1368,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
           ...importHandlers,
           ...workspacesHandlers,
           ...apiKeysHandlers,
+          ...evalHandlers,
         },
         handlerDeps,
       });
@@ -1422,7 +1437,7 @@ export { createSupabaseClient };
 function classifyRouteGroup(pathname: string): string {
   if (pathname === "/healthz") return "health";
   if (pathname === "/v1/memories" || /^\/v1\/memories\/[^/]+$/.test(pathname)) return "memories";
-  if (pathname === "/v1/search") return "search";
+  if (pathname === "/v1/search" || pathname === "/v1/search/history" || pathname === "/v1/search/replay") return "search";
   if (pathname === "/v1/context") return "context";
   if (pathname === "/v1/usage/today") return "usage";
   if (pathname.startsWith("/v1/billing/")) return "billing";
@@ -1779,6 +1794,7 @@ export function normalizeSearchPayload(payload: SearchPayload): NormalizedSearch
     top_k,
     page,
     page_size,
+    explain: payload.explain === true,
     filters: {
       metadata,
       start_time,
@@ -2220,6 +2236,12 @@ type FusionResult = {
   chunk_index: number;
   text: string;
   score: number;
+  _explain?: {
+    rrf_score: number;
+    match_sources: ("vector" | "text")[];
+    vector_score?: number;
+    text_score?: number;
+  };
 };
 
 async function callMatchVector(
@@ -2315,14 +2337,20 @@ function reciprocalRankFusion(
   vectorResults: MatchResult[],
   textResults: MatchResult[],
   topK: number,
+  includeExplain: boolean,
 ): FusionResult[] {
-  const scores = new Map<string, FusionResult & { rrf: number }>();
+  const scores = new Map<
+    string,
+    FusionResult & { rrf: number; vectorScore?: number; textScore?: number; matchSources: ("vector" | "text")[] }
+  >();
 
-  const applyList = (list: MatchResult[]) => {
+  const applyList = (list: MatchResult[], source: "vector" | "text") => {
     list.forEach((item, idx) => {
       const rrfScore = 1 / (RRF_K + idx + 1);
       const existing = scores.get(item.chunk_id);
       const combinedScore = (existing?.rrf ?? 0) + rrfScore;
+      const matchSources = existing?.matchSources ?? [];
+      if (!matchSources.includes(source)) matchSources.push(source);
       scores.set(item.chunk_id, {
         chunk_id: item.chunk_id,
         memory_id: item.memory_id,
@@ -2330,12 +2358,16 @@ function reciprocalRankFusion(
         text: item.chunk_text,
         score: combinedScore,
         rrf: combinedScore,
+        ...(source === "vector"
+          ? { vectorScore: item.score, textScore: existing?.textScore }
+          : { vectorScore: existing?.vectorScore, textScore: item.score }),
+        matchSources,
       });
     });
   };
 
-  applyList(vectorResults);
-  applyList(textResults);
+  applyList(vectorResults, "vector");
+  applyList(textResults, "text");
 
   return Array.from(scores.values())
     .sort((a, b) => {
@@ -2344,9 +2376,17 @@ function reciprocalRankFusion(
       return a.chunk_id.localeCompare(b.chunk_id);
     })
     .slice(0, topK)
-    .map(({ rrf, ...rest }) => {
-      void rrf;
-      return rest;
+    .map(({ rrf, vectorScore, textScore, matchSources, ...rest }) => {
+      const result: FusionResult = rest;
+      if (includeExplain) {
+        result._explain = {
+          rrf_score: rrf,
+          match_sources: matchSources,
+          ...(vectorScore !== undefined ? { vector_score: vectorScore } : {}),
+          ...(textScore !== undefined ? { text_score: textScore } : {}),
+        };
+      }
+      return result;
     });
 }
 
@@ -2413,7 +2453,7 @@ async function performSearch(
 ): Promise<SearchOutcome> {
   const searchStart = Date.now();
   const params = normalizeSearchPayload(payload);
-  const { user_id, query, namespace, top_k, page, page_size, filters } = params;
+  const { user_id, query, namespace, top_k, page, page_size, explain, filters } = params;
   const today = todayUtc();
 
   const desired = Math.min(MAX_FUSE_RESULTS, Math.max(top_k, page * page_size));
@@ -2451,7 +2491,12 @@ async function performSearch(
     embedsDelta: 1,
   });
 
-  const fused = reciprocalRankFusion(vectorResults, textResults, Math.min(matchCount, MAX_FUSE_RESULTS));
+  const fused = reciprocalRankFusion(
+    vectorResults,
+    textResults,
+    Math.min(matchCount, MAX_FUSE_RESULTS),
+    !!explain,
+  );
   const final = finalizeResults(fused, page, page_size);
 
   const searchLatency = Date.now() - searchStart;
@@ -2661,6 +2706,11 @@ const defaultSearchHandlerDeps: SearchHandlerDeps = {
 
 const searchHandlersDefault = createSearchHandlers(defaultSearchHandlerDeps, defaultSearchHandlerDeps);
 const contextHandlersDefault = createContextHandlers(defaultSearchHandlerDeps, defaultSearchHandlerDeps);
+
+const defaultEvalHandlerDeps: EvalHandlerDeps = {
+  jsonResponse: simpleJsonResponse,
+  performSearch,
+};
 
 /** Full deps for usage handler when called directly (e.g. from tests). */
 const defaultUsageHandlerDeps: UsageHandlerDeps = {

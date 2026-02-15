@@ -15,7 +15,10 @@ with required_tables(name) as (
     ('payu_transactions'),
     ('workspace_entitlements'),
     ('memorynode_migrations'),
-    ('dashboard_sessions')
+    ('dashboard_sessions'),
+    ('eval_sets'),
+    ('eval_items'),
+    ('search_query_history')
 ),
 missing_tables as (
   select name

@@ -5,13 +5,14 @@ import { ApiKeyRow, InviteRow, MemoryRow, UsageRow } from "./types";
 import { loadWorkspaceId, persistWorkspaceId } from "./state";
 import { ApiClientError, apiEnvError, apiGet, apiPost, ensureDashboardSession, dashboardLogout, setOnUnauthorized, userFacingErrorMessage } from "./apiClient";
 
-type Tab = "workspaces" | "keys" | "memories" | "usage" | "activation" | "settings";
+type Tab = "workspaces" | "keys" | "memories" | "usage" | "retrieval" | "activation" | "settings";
 
 const tabs: Array<{ key: Tab; label: string }> = [
   { key: "workspaces", label: "Workspaces" },
   { key: "keys", label: "API Keys" },
   { key: "memories", label: "Memory Browser" },
   { key: "usage", label: "Usage" },
+  { key: "retrieval", label: "Retrieval" },
   { key: "activation", label: "Activation" },
   { key: "settings", label: "Settings" },
 ];
@@ -282,6 +283,7 @@ export function App(): JSX.Element {
         {tab === "keys" && <ApiKeysView workspaceId={workspaceClaim || workspaceId} />}
         {tab === "memories" && <MemoryView userId={session.user.id} />}
         {tab === "usage" && <UsageView />}
+        {tab === "retrieval" && <RetrievalView userId={session.user.id} />}
         {tab === "activation" && <ActivationView workspaceId={workspaceClaim || workspaceId} />}
         {tab === "settings" && <SettingsView session={session} />}
       </div>
@@ -560,6 +562,7 @@ function MemoryView({ userId }: { userId: string }) {
   const [page, setPage] = useState(1);
   const [pageSize] = useState(10);
   const [selected, setSelected] = useState<MemoryRow | null>(null);
+  const [saveToHistory, setSaveToHistory] = useState(false);
 
   const parseMetadata = (): Record<string, unknown> | undefined => {
     if (!metadata.trim()) return undefined;
@@ -610,6 +613,7 @@ function MemoryView({ userId }: { userId: string }) {
       const res = await apiPost<{ results: MemoryRow[]; total?: number; has_more?: boolean }>(
         "/v1/search",
         body,
+        saveToHistory ? { "x-save-history": "true" } : undefined,
       );
       setRows(resetPage ? res.results : [...rows, ...res.results]);
       setTotal(res.total ?? null);
@@ -648,6 +652,10 @@ function MemoryView({ userId }: { userId: string }) {
         <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} title="End date" />
       </div>
       <div className="row">
+        <label>
+          <input type="checkbox" checked={saveToHistory} onChange={(e) => setSaveToHistory(e.target.checked)} />
+          Save to history (for replay)
+        </label>
         <button onClick={() => search(true)} disabled={loading}>
           {loading ? "Searching…" : "Search"}
         </button>
@@ -707,6 +715,169 @@ function MemoryView({ userId }: { userId: string }) {
               Close
             </button>
           </div>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function RetrievalView({ userId }: { userId: string }) {
+  const [evalSets, setEvalSets] = useState<Array<{ id: string; name: string; created_at: string }>>([]);
+  const [history, setHistory] = useState<Array<{ id: string; query: string; created_at: string }>>([]);
+  const [newEvalName, setNewEvalName] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [evalResult, setEvalResult] = useState<{ summary: { avg_precision_at_k: number; avg_recall: number }; count: number } | null>(null);
+  const [replayResult, setReplayResult] = useState<{ previous: { total: number }; current: { total: number } } | null>(null);
+  const [runningEvalId, setRunningEvalId] = useState<string | null>(null);
+  const [replayingId, setReplayingId] = useState<string | null>(null);
+
+  const loadEvalSets = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await apiGet<{ eval_sets: Array<{ id: string; name: string; created_at: string }> }>("/v1/eval/sets");
+      setEvalSets(res.eval_sets ?? []);
+    } catch (err: unknown) {
+      setError(userFacingErrorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadHistory = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await apiGet<{ history: Array<{ id: string; query: string; created_at: string }> }>("/v1/search/history?limit=20");
+      setHistory(res.history ?? []);
+    } catch (err: unknown) {
+      setError(userFacingErrorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const createEvalSet = async () => {
+    if (!newEvalName.trim()) return;
+    setError(null);
+    try {
+      await apiPost("/v1/eval/sets", { name: newEvalName.trim() });
+      setNewEvalName("");
+      loadEvalSets();
+    } catch (err: unknown) {
+      setError(userFacingErrorMessage(err));
+    }
+  };
+
+  const runEval = async (evalSetId: string) => {
+    setRunningEvalId(evalSetId);
+    setEvalResult(null);
+    setError(null);
+    try {
+      const res = await apiPost<{ summary: { avg_precision_at_k: number; avg_recall: number; count: number }; items?: unknown[] }>(
+        "/v1/eval/run",
+        { eval_set_id: evalSetId, user_id: userId },
+      );
+      setEvalResult({
+        summary: res.summary,
+        count: res.summary?.count ?? (res.items?.length ?? 0),
+      });
+    } catch (err: unknown) {
+      setError(userFacingErrorMessage(err));
+    } finally {
+      setRunningEvalId(null);
+    }
+  };
+
+  const replay = async (queryId: string) => {
+    setReplayingId(queryId);
+    setReplayResult(null);
+    setError(null);
+    try {
+      const res = await apiPost<{ previous: { total: number }; current: { total: number } }>("/v1/search/replay", {
+        query_id: queryId,
+      });
+      setReplayResult({ previous: res.previous ?? { total: 0 }, current: res.current ?? { total: 0 } });
+    } catch (err: unknown) {
+      setError(userFacingErrorMessage(err));
+    } finally {
+      setReplayingId(null);
+    }
+  };
+
+  useEffect(() => {
+    void loadEvalSets();
+    void loadHistory();
+  }, []);
+
+  return (
+    <Panel title="Retrieval Quality (Phase 5)">
+      <p className="muted small">
+        Eval sets and search history. Use Memory Browser with <code>X-Save-History: true</code> to save searches for replay. See{" "}
+        docs/RETRIEVAL_COCKPIT_DEMO.md
+        .
+      </p>
+      {error && (
+        <div className="badge">
+          {error}
+          <button className="ghost" onClick={() => setError(null)}>
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      <h4>Eval sets</h4>
+      <div className="row">
+        <input value={newEvalName} onChange={(e) => setNewEvalName(e.target.value)} placeholder="New eval set name" />
+        <button onClick={createEvalSet} disabled={!newEvalName.trim()}>
+          Create
+        </button>
+      </div>
+      <ul className="list">
+        {evalSets.map((s) => (
+          <li key={s.id} className="card">
+            <div className="row-space">
+              <div>
+                <strong>{s.name}</strong>
+                <div className="muted small">{new Date(s.created_at).toLocaleString()}</div>
+              </div>
+              <button onClick={() => runEval(s.id)} disabled={!!runningEvalId}>
+                {runningEvalId === s.id ? "Running…" : "Run eval"}
+              </button>
+            </div>
+          </li>
+        ))}
+      </ul>
+      {evalResult && (
+        <div className="badge">
+          Avg precision@k: {evalResult.summary.avg_precision_at_k.toFixed(3)} · Avg recall: {evalResult.summary.avg_recall.toFixed(3)} · Items: {evalResult.count}
+        </div>
+      )}
+
+      <h4>Search history</h4>
+      <button className="ghost" onClick={loadHistory} disabled={loading}>
+        Refresh
+      </button>
+      <ul className="list">
+        {history.map((h) => (
+          <li key={h.id} className="card">
+            <div className="row-space">
+              <div>
+                <div className="muted small">{h.query.slice(0, 80)}{h.query.length > 80 ? "…" : ""}</div>
+                <div className="muted small">{new Date(h.created_at).toLocaleString()}</div>
+              </div>
+              <button onClick={() => replay(h.id)} disabled={!!replayingId}>
+                {replayingId === h.id ? "Replaying…" : "Replay"}
+              </button>
+            </div>
+          </li>
+        ))}
+      </ul>
+      {history.length === 0 && !loading && <div className="muted small">No saved searches. Add X-Save-History: true to search requests.</div>}
+      {replayResult && (
+        <div className="badge">
+          Previous: {replayResult.previous.total} results · Current: {replayResult.current.total} results
         </div>
       )}
     </Panel>

@@ -126,8 +126,8 @@ export async function dashboardLogout(): Promise<void> {
   setCsrfToken(null);
 }
 
-export async function apiPost<T>(path: string, body: unknown = {}): Promise<T> {
-  const headers: Record<string, string> = { "content-type": "application/json" };
+export async function apiPost<T>(path: string, body: unknown = {}, extraHeaders?: Record<string, string>): Promise<T> {
+  const headers: Record<string, string> = { "content-type": "application/json", ...extraHeaders };
   if (csrfToken) headers["x-csrf-token"] = csrfToken;
   return fetchJson<T>(path, {
     method: "POST",

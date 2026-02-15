@@ -22,6 +22,7 @@ export const SearchPayloadSchema = z.object({
   page: z.number().int().min(1).optional(),
   page_size: z.number().int().min(1).max(50).optional(),
   filters: filtersSchema,
+  explain: z.boolean().optional(),
 });
 
 export type SearchPayload = z.infer<typeof SearchPayloadSchema>;

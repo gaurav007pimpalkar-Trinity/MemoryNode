@@ -73,7 +73,23 @@ export function createSearchHandlers(
     requestId: string,
     deps?: HandlerDeps,
   ) => Promise<Response>;
+  handleListSearchHistory: (
+    request: Request,
+    env: Env,
+    supabase: SupabaseClient,
+    auditCtx: { workspaceId?: string; apiKeyId?: string },
+    deps?: HandlerDeps,
+  ) => Promise<Response>;
+  handleReplaySearch: (
+    request: Request,
+    env: Env,
+    supabase: SupabaseClient,
+    auditCtx: { workspaceId?: string; apiKeyId?: string },
+    requestId: string,
+    deps?: HandlerDeps,
+  ) => Promise<Response>;
 } {
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   return {
     async handleSearch(request, env, supabase, auditCtx, requestId = "", deps?) {
       const d = (deps ?? defaultDeps) as SearchHandlerDeps;
@@ -115,6 +131,32 @@ export function createSearchHandlers(
 
       const outcome = await d.performSearch(auth, parseResult.data, env, supabase);
 
+      const saveHistory = request.headers.get("x-save-history")?.toLowerCase() === "true";
+      if (saveHistory && auth.workspaceId) {
+        void supabase
+          .from("search_query_history")
+          .insert({
+            workspace_id: auth.workspaceId,
+            query: parseResult.data.query,
+            params: {
+              user_id: parseResult.data.user_id,
+              namespace: parseResult.data.namespace,
+              top_k: parseResult.data.top_k,
+              page: parseResult.data.page,
+              page_size: parseResult.data.page_size,
+              filters: parseResult.data.filters,
+              explain: parseResult.data.explain,
+            },
+            results_snapshot: {
+              results: outcome.results,
+              total: outcome.total,
+              page: outcome.page,
+              has_more: outcome.has_more,
+            },
+          })
+          .then(() => {});
+      }
+
       void d.emitProductEvent(
         supabase,
         "first_search_success",
@@ -137,6 +179,93 @@ export function createSearchHandlers(
           page_size: outcome.page_size,
           total: outcome.total,
           has_more: outcome.has_more,
+        },
+        200,
+        rate.headers,
+      );
+    },
+
+    async handleListSearchHistory(request, env, supabase, auditCtx, deps?) {
+      const d = (deps ?? defaultDeps) as SearchHandlerDeps;
+      const { jsonResponse } = d;
+      const auth = await authenticate(request, env, supabase, auditCtx);
+      const rate = await rateLimit(auth.keyHash, env);
+      if (!rate.allowed) {
+        return jsonResponse({ error: { code: "rate_limited", message: "Rate limit exceeded" } }, 429, rate.headers);
+      }
+      const url = new URL(request.url);
+      const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "20", 10) || 20, 100);
+      const { data, error } = await supabase
+        .from("search_query_history")
+        .select("id, query, params, created_at")
+        .eq("workspace_id", auth.workspaceId)
+        .order("created_at", { ascending: false })
+        .limit(limit);
+      if (error) {
+        return jsonResponse({ error: { code: "DB_ERROR", message: error.message } }, 500, rate.headers);
+      }
+      return jsonResponse({ history: data ?? [] }, 200, rate.headers);
+    },
+
+    async handleReplaySearch(request, env, supabase, auditCtx, requestId = "", deps?) {
+      const d = (deps ?? defaultDeps) as SearchHandlerDeps;
+      const { jsonResponse } = d;
+      const auth = await authenticate(request, env, supabase, auditCtx);
+      const rate = await rateLimit(auth.keyHash, env);
+      if (!rate.allowed) {
+        return jsonResponse({ error: { code: "rate_limited", message: "Rate limit exceeded" } }, 429, rate.headers);
+      }
+      let body: { query_id?: string };
+      try {
+        body = (await request.json()) as { query_id?: string };
+      } catch {
+        return jsonResponse({ error: { code: "BAD_REQUEST", message: "Invalid JSON body" } }, 400, rate.headers);
+      }
+      const queryId = body.query_id;
+      if (!queryId || !UUID_RE.test(queryId)) {
+        return jsonResponse({ error: { code: "BAD_REQUEST", message: "query_id (UUID) is required" } }, 400, rate.headers);
+      }
+      const { data: row, error } = await supabase
+        .from("search_query_history")
+        .select("id, query, params, results_snapshot, workspace_id")
+        .eq("id", queryId)
+        .maybeSingle();
+      if (error || !row || row.workspace_id !== auth.workspaceId) {
+        return jsonResponse({ error: { code: "NOT_FOUND", message: "Query not found" } }, 404, rate.headers);
+      }
+      const params = (row.params ?? {}) as Record<string, unknown>;
+      const payload = {
+        user_id: params.user_id ?? "default",
+        query: row.query,
+        namespace: params.namespace,
+        top_k: params.top_k,
+        page: params.page ?? 1,
+        page_size: params.page_size,
+        filters: params.filters,
+        explain: params.explain,
+      };
+      const capResponse = await d.checkCapsAndMaybeRespond(
+        jsonResponse,
+        auth,
+        supabase,
+        { writesDelta: 0, readsDelta: 1, embedsDelta: 1 },
+        rate.headers,
+        env,
+        { requestId, route: "/v1/search/replay", method: "POST" },
+      );
+      if (capResponse) return capResponse;
+      const current = await d.performSearch(auth, payload, env, supabase);
+      return jsonResponse(
+        {
+          query_id: queryId,
+          previous: row.results_snapshot ?? null,
+          current: {
+            results: current.results,
+            total: current.total,
+            page: current.page,
+            page_size: current.page_size,
+            has_more: current.has_more,
+          },
         },
         200,
         rate.headers,

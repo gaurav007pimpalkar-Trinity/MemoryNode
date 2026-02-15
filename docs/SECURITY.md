@@ -1,4 +1,25 @@
-# Secrets & Credential Hygiene
+# MemoryNode Security
+
+## Our Security Stance
+
+**What we do:**
+- **Authentication:** Supabase Auth (magic link, OAuth); session tokens in httpOnly cookies for dashboard; API keys for programmatic access.
+- **Authorization:** Row-level security (RLS) in Supabase; workspace-scoped access; server validates membership on every call.
+- **Credentials:** We never store long-lived API keys in the browser. Keys are shown once at creation; thereafter only prefix in UI.
+- **Audit trail:** API request logs (route, method, status, workspace); billing webhook events; retention per DATA_RETENTION.md.
+- **Billing:** PayU with hash verification, verify-before-grant, idempotency. Webhook payloads do not grant access until verified.
+- **Headers:** CSP, X-Content-Type-Options, Referrer-Policy; CSRF protection on mutating dashboard calls.
+
+**What we don’t do:**
+- Store raw API keys in localStorage, sessionStorage, or IndexedDB.
+- Grant entitlements from unverified webhook payloads.
+- Ship demo or hardcoded auth in production.
+
+**Data handling:** Where it lives, who can access, retention — see [DATA_RETENTION.md](./DATA_RETENTION.md).
+
+---
+
+## Secrets & Credential Hygiene
 
 ## Rules
 
