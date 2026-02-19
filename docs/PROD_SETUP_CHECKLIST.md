@@ -57,7 +57,7 @@ PayU billing vars (required when billing/webhooks are enabled):
 
 Common optional vars:
 
-- [ ] `ALLOWED_ORIGINS` (recommended for strict CORS)
+- [ ] `ALLOWED_ORIGINS` — **required in production** for dashboard CORS; release:gate fails if missing. Comma-separated origins (e.g. `https://app.memorynode.ai`).
 - [ ] `BUILD_VERSION`
 - [ ] `GIT_SHA`
 
@@ -67,6 +67,7 @@ Set these with Wrangler secret commands (example uses production env):
 
 ```bash
 pnpm --filter @memorynode/api exec wrangler secret put SUPABASE_SERVICE_ROLE_KEY --env production
+pnpm --filter @memorynode/api exec wrangler secret put SUPABASE_ANON_KEY --env production
 pnpm --filter @memorynode/api exec wrangler secret put API_KEY_SALT --env production
 pnpm --filter @memorynode/api exec wrangler secret put MASTER_ADMIN_TOKEN --env production
 pnpm --filter @memorynode/api exec wrangler secret put OPENAI_API_KEY --env production
@@ -75,6 +76,7 @@ pnpm --filter @memorynode/api exec wrangler secret put PAYU_MERCHANT_SALT --env 
 ```
 
 Notes:
+- [ ] `SUPABASE_ANON_KEY` is required in production for dashboard session (Supabase Auth Get User); release:gate fails if missing.
 - [ ] `OPENAI_API_KEY` is required when `EMBEDDINGS_MODE=openai`.
 - [ ] `PAYU_MERCHANT_KEY` and `PAYU_MERCHANT_SALT` are required when billing/webhooks are enabled. Optionally set `PAYU_WEBHOOK_SECRET` for webhook verification.
 - [ ] Do not put secrets in `wrangler.toml [vars]`.

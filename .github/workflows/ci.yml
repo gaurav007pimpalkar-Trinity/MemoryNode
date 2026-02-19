@@ -24,10 +24,13 @@ jobs:
         run: corepack enable
 
       - name: Prepare pnpm
-        run: corepack prepare pnpm@latest-10 --activate
+        run: corepack prepare pnpm@10.0.0 --activate
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Dependency audit (high/critical)
+        run: pnpm audit --audit-level=high
 
       - name: Secret scan (tracked files)
         run: pnpm secrets:check:tracked -- --ci
@@ -95,6 +98,8 @@ jobs:
         run: pnpm openapi:check
 
       - name: Test
+        env:
+          VITE_API_BASE_URL: https://api.memorynode.ai
         run: pnpm test
 
   db-migration-drift:
@@ -131,7 +136,7 @@ jobs:
         run: corepack enable
 
       - name: Prepare pnpm
-        run: corepack prepare pnpm@latest-10 --activate
+        run: corepack prepare pnpm@10.0.0 --activate
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -161,7 +166,7 @@ jobs:
         run: corepack enable
 
       - name: Prepare pnpm
-        run: corepack prepare pnpm@latest-10 --activate
+        run: corepack prepare pnpm@10.0.0 --activate
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -217,7 +222,7 @@ jobs:
         run: corepack enable
 
       - name: Prepare pnpm
-        run: corepack prepare pnpm@latest-10 --activate
+        run: corepack prepare pnpm@10.0.0 --activate
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

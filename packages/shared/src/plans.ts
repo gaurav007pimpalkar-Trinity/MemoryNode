@@ -23,7 +23,7 @@ export interface Plan {
 
 /** Default: 60 req/min per API key. */
 export const RATE_LIMIT_RPM_DEFAULT = 60;
-/** New keys first 24–48h: 15 req/min. TODO: Implement reduced RPM for new keys for 48h using api_keys.created_at (DB) or issue_time in key metadata. */
+/** New keys: 15 req/min for first 48h (implemented via api_keys.created_at in API). */
 export const RATE_LIMIT_RPM_NEW_KEY = 15;
 
 /** ~200 tokens per embed (docs + future embed_tokens enforcement). */

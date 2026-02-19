@@ -58,7 +58,8 @@ Billing
 - `POST /v1/billing/webhook` – PayU callback (raw body, hash verified with PAYU_MERCHANT_SALT/PAYU_MERCHANT_KEY).
 
 Plans & Limits
-- See [Plans & Limits](README.md#plans--limits) in docs. Plans: Launch ₹299/7d, Build ₹499/month, Deploy ₹1,999/month, Scale ₹4,999/month, Scale+ custom. Limits: writes/day, reads/day, embed_tokens/day (hard gate). Rate limit: 60 req/min (15 for new keys first 24–48h).
+- See [Plans & Limits](README.md#plans--limits) in docs. Plans: Launch ₹299/7d, Build ₹499/month, Deploy ₹1,999/month, Scale ₹4,999/month, Scale+ custom. Limits: writes/day, reads/day, embed_tokens/day (hard gate). Rate limit: 60 req/min (15 for new keys first 48h).
+- **Plan codes (internal vs external):** The DB `workspaces` table and legacy fields use `plan` values `free` / `pro` / `team` for compatibility. The **external contract** for quotas and display is **effective_plan** (e.g. `launch`, `build`, `deploy`, `scale`, `scale_plus`). Billing and entitlements resolve to these; always use `effective_plan` from API responses for limits and UI.
 
 Retrieval quality (Phase 5)
 - `GET /v1/eval/sets` – list eval sets

@@ -8,6 +8,7 @@ import { vi } from "vitest";
 
 const envBase = {
   RATE_LIMIT_DO: makeRateLimitDoStub(1), // allow only 1 request per window
+  RATE_LIMIT_MAX: "1", // client sends this in body; stub uses it
   SUPABASE_URL: "",
   SUPABASE_SERVICE_ROLE_KEY: "",
   OPENAI_API_KEY: "",
@@ -91,6 +92,60 @@ describe("rate limiting via Durable Object", () => {
     );
     expect(second.status).toBe(429);
     const body = await second.json();
+    expect(body.error.code).toBe("rate_limited");
+  });
+
+  it("new API keys get 15 RPM for first 48h", async () => {
+    const recentCreatedAt = new Date().toISOString();
+    const supabaseNewKey = {
+      ...supabase,
+      from(table: string) {
+        if (table === "api_keys") {
+          const builder = {
+            select: () => builder,
+            eq: () => builder,
+            is: () => builder,
+            single: async () => ({
+              data: {
+                id: "k1",
+                workspace_id: "ws1",
+                created_at: recentCreatedAt,
+                workspaces: { plan: "free", plan_status: "active" },
+              },
+              error: null,
+            }),
+          };
+          return builder;
+        }
+        return supabase.from(table);
+      },
+    };
+    const env = {
+      ...envBase,
+      RATE_LIMIT_DO: makeRateLimitDoStub(15),
+      RATE_LIMIT_MAX: undefined as string | undefined, // so default 60 for old keys; new key uses 15 from getRateLimitMax
+    };
+    const req = new Request("http://localhost/v1/billing/status", {
+      method: "GET",
+      headers: { authorization: "Bearer mn_live_newkey" },
+    });
+    for (let i = 0; i < 15; i++) {
+      const res = await handleBillingStatus(
+        req,
+        env as unknown as Record<string, unknown>,
+        supabaseNewKey as unknown as SupabaseClient,
+        {},
+      );
+      expect(res.status).toBe(200);
+    }
+    const res16 = await handleBillingStatus(
+      req,
+      env as unknown as Record<string, unknown>,
+      supabaseNewKey as unknown as SupabaseClient,
+      {},
+    );
+    expect(res16.status).toBe(429);
+    const body = await res16.json();
     expect(body.error.code).toBe("rate_limited");
   });
 

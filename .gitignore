@@ -86,9 +86,6 @@ __pycache__/
 ##########
 # Local audit/report artifacts (do not commit)
 ##########
-/docs/CTO_ONBOARDING_REPORT.md
-/docs/CTO_EVIDENCE_INDEX.md
-/docs/CTO_ARCHITECTURE_ASCII.md
 /docs/generated/
 /ARTIFACTS/
 /.tmp/cto_cmd/results.json

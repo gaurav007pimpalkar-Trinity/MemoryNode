@@ -10,7 +10,16 @@ export function makeRateLimitDoStub(limit = RATE_LIMIT_MAX, windowMs = RATE_LIMI
     },
     get(id: string) {
       return {
-        fetch: async () => {
+        fetch: async (req: Request) => {
+          let useLimit = limit;
+          try {
+            const body = (await req.json()) as { limit?: number } | null;
+            if (body && typeof body.limit === "number" && Number.isFinite(body.limit) && body.limit > 0) {
+              useLimit = Math.floor(body.limit);
+            }
+          } catch {
+            /* ignore */
+          }
           const now = Date.now();
           const windowStart = Math.floor(now / windowMs) * windowMs;
           const bucket = buckets.get(id) ?? { count: 0, windowStart };
@@ -22,7 +31,7 @@ export function makeRateLimitDoStub(limit = RATE_LIMIT_MAX, windowMs = RATE_LIMI
           buckets.set(id, bucket);
           const reset = Math.floor((bucket.windowStart + windowMs) / 1000);
           return new Response(
-            JSON.stringify({ allowed: bucket.count <= limit, count: bucket.count, limit, reset }),
+            JSON.stringify({ allowed: bucket.count <= useLimit, count: bucket.count, limit: useLimit, reset }),
             { status: 200, headers: { "content-type": "application/json" } },
           );
         },

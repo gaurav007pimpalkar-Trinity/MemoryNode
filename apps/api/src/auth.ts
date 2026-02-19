@@ -7,12 +7,15 @@ import type { Env } from "./env.js";
 import { createHttpError } from "./http.js";
 import { logger, redact } from "./logger.js";
 import { generateRequestId } from "./cors.js";
+import { getRateLimitMax } from "./limits.js";
 
 export interface AuthContext {
   workspaceId: string;
   keyHash: string;
   plan: "free" | "pro" | "team";
   planStatus?: "free" | "trialing" | "active" | "past_due" | "canceled";
+  /** Set when authenticated via API key; used for new-key rate limit (15 RPM for first 48h). */
+  keyCreatedAt?: string | null;
 }
 
 const ALLOWED_PLAN_STATUS = new Set(["free", "trialing", "active", "past_due", "canceled"]);
@@ -154,7 +157,7 @@ export async function authenticate(
   const hashed = await hashApiKey(rawKey, saltOutcome.salt);
   const { data, error } = await supabase
     .from("api_keys")
-    .select("id, workspace_id, workspaces(plan, plan_status)")
+    .select("id, workspace_id, created_at, workspaces(plan, plan_status)")
     .eq("key_hash", hashed)
     .is("revoked_at", null)
     .single();
@@ -195,11 +198,13 @@ export async function authenticate(
   const planStatusRaw = normalizePlanStatus(workspace?.plan_status);
   const plan: AuthContext["plan"] = planRaw === "pro" || planRaw === "team" ? planRaw : "free";
 
+  const createdAt = (data as { created_at?: string } | null)?.created_at ?? null;
   const ctx: AuthContext = {
     workspaceId: data.workspace_id as string,
     keyHash: hashed,
     plan,
     planStatus: planStatusRaw ?? "free",
+    keyCreatedAt: createdAt,
   };
   if (auditCtx) {
     auditCtx.workspaceId = ctx.workspaceId;
@@ -211,18 +216,24 @@ export async function authenticate(
 export async function rateLimit(
   key: string,
   env: Env,
+  auth?: Pick<AuthContext, "keyCreatedAt">,
 ): Promise<{ allowed: boolean; headers: Record<string, string> }> {
   if ((env.RATE_LIMIT_MODE ?? "on").toLowerCase() === "off") return { allowed: true, headers: {} };
   const ns = env.RATE_LIMIT_DO;
   if (!ns || typeof ns.idFromName !== "function" || typeof ns.get !== "function") {
     return { allowed: true, headers: {} };
   }
+  const max = getRateLimitMax(env, auth?.keyCreatedAt);
   const name = `rl:${key}`;
   const id = ns.idFromName(name);
   const stub = ns.get(id);
   let resp: Response;
   try {
-    resp = await stub.fetch("https://rate-limit/check", { method: "POST" });
+    resp = await stub.fetch("https://rate-limit/check", {
+      method: "POST",
+      body: JSON.stringify({ limit: max }),
+      headers: { "content-type": "application/json" },
+    });
   } catch (err) {
     throw createHttpError(503, "RATE_LIMIT_UNAVAILABLE", "Rate limit service unavailable");
   }

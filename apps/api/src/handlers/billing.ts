@@ -114,7 +114,7 @@ export function createBillingHandlers(
         );
       }
       const auth = await authenticate(request, env, supabase, auditCtx);
-      const rate = await rateLimit(auth.keyHash, env);
+      const rate = await rateLimit(auth.keyHash, env, auth);
       if (!rate.allowed) {
         return jsonResponse(
           { error: { code: "rate_limited", message: "Rate limit exceeded" } },
@@ -178,7 +178,7 @@ export function createBillingHandlers(
       d.assertPayUEnvFor("/v1/billing/checkout", env);
 
       const auth = await authenticate(request, env, supabase, auditCtx);
-      const rate = await rateLimit(auth.keyHash, env);
+      const rate = await rateLimit(auth.keyHash, env, auth);
       if (!rate.allowed) {
         return jsonResponse(
           { error: { code: "rate_limited", message: "Rate limit exceeded" } },
@@ -352,7 +352,7 @@ export function createBillingHandlers(
       const d = (deps ?? defaultDeps) as BillingHandlerDeps;
       const { jsonResponse } = d;
       const auth = await authenticate(request, env, supabase, auditCtx);
-      const rate = await rateLimit(auth.keyHash, env);
+      const rate = await rateLimit(auth.keyHash, env, auth);
       if (!rate.allowed) {
         return jsonResponse(
           { error: { code: "rate_limited", message: "Rate limit exceeded" } },

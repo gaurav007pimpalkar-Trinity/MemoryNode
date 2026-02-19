@@ -120,7 +120,7 @@ export function createMemoryHandlers(
       const { jsonResponse } = d;
       const auth = await authenticate(request, env, supabase, auditCtx);
       auditCtx.workspaceId = auth.workspaceId;
-      const rate = await rateLimit(auth.keyHash, env);
+      const rate = await rateLimit(auth.keyHash, env, auth);
       if (!rate.allowed) {
         return jsonResponse(
           { error: { code: "rate_limited", message: "Rate limit exceeded" } },
@@ -238,7 +238,7 @@ export function createMemoryHandlers(
       const d = (deps ?? defaultDeps) as MemoryHandlerDeps;
       const { jsonResponse } = d;
       const auth = await authenticate(request, env, supabase, auditCtx);
-      const rate = await rateLimit(auth.keyHash, env);
+      const rate = await rateLimit(auth.keyHash, env, auth);
       if (!rate.allowed) {
         return jsonResponse(
           { error: { code: "rate_limited", message: "Rate limit exceeded" } },
@@ -267,7 +267,7 @@ export function createMemoryHandlers(
       const d = (deps ?? defaultDeps) as MemoryHandlerDeps;
       const { jsonResponse } = d;
       const auth = await authenticate(request, env, supabase, auditCtx);
-      const rate = await rateLimit(auth.keyHash, env);
+      const rate = await rateLimit(auth.keyHash, env, auth);
       if (!rate.allowed) {
         return jsonResponse(
           { error: { code: "rate_limited", message: "Rate limit exceeded" } },
@@ -302,7 +302,7 @@ export function createMemoryHandlers(
       const d = (deps ?? defaultDeps) as MemoryHandlerDeps;
       const { jsonResponse } = d;
       const auth = await authenticate(request, env, supabase, auditCtx);
-      const rate = await rateLimit(auth.keyHash, env);
+      const rate = await rateLimit(auth.keyHash, env, auth);
       if (!rate.allowed) {
         return jsonResponse(
           { error: { code: "rate_limited", message: "Rate limit exceeded" } },

@@ -45,8 +45,49 @@ export function createAdminHandlers(
     supabase: SupabaseClient,
     deps?: HandlerDeps,
   ) => Promise<Response>;
+  handleCleanupExpiredSessions: (
+    request: Request,
+    env: Env,
+    supabase: SupabaseClient,
+    requestId: string,
+    deps?: HandlerDeps,
+  ) => Promise<Response>;
 } {
   return {
+    async handleCleanupExpiredSessions(request, env, supabase, requestId = "", deps?) {
+      const d = (deps ?? defaultDeps) as AdminHandlerDeps;
+      const { jsonResponse } = d;
+      const { token } = await d.requireAdmin(request, env);
+      const rate = await d.rateLimit(`admin:sessions:${token}`, env);
+      if (!rate.allowed) {
+        return jsonResponse(
+          { error: { code: "rate_limited", message: "Rate limit exceeded" } },
+          429,
+          rate.headers,
+        );
+      }
+      const nowIso = new Date().toISOString();
+      const { data: deletedRows, error } = await supabase
+        .from("dashboard_sessions")
+        .delete()
+        .lt("expires_at", nowIso)
+        .select("id");
+      if (error) {
+        return jsonResponse(
+          { error: { code: "DB_ERROR", message: error.message ?? "Failed to delete expired sessions" } },
+          500,
+          rate.headers,
+        );
+      }
+      const deleted = Array.isArray(deletedRows) ? deletedRows.length : 0;
+      d.emitEventLog("dashboard_sessions_cleanup", {
+        route: "/admin/sessions/cleanup",
+        request_id: requestId || null,
+        deleted,
+      });
+      return jsonResponse({ ok: true, deleted }, 200, rate.headers);
+    },
+
     async handleReprocessDeferredWebhooks(request, env, supabase, requestId = "", deps?) {
       const d = (deps ?? defaultDeps) as AdminHandlerDeps;
       const { jsonResponse } = d;

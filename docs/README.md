@@ -14,8 +14,6 @@
 - `docs/TROUBLESHOOTING_BETA.md` – beta symptom->cause->fix playbook and support template.
 - `docs/QUICKSTART.md` – 10-minute developer quickstart (envs, migrations, dev servers, curls).
 - `docs/API_REFERENCE.md` – endpoint reference (Worker API, admin, billing, plans).
-- `docs/IMPROVEMENT_PLAN.md` – phased plan to fix wrongs and implement improvements (with tasks and checklists).
-- `docs/BEST_IN_MARKET_PLAN.md` – CEO/CTO strategic plan to make MemoryNode best-in-market (trust breakers, moat, observability, retrieval cockpit).
 
 ## Documentation Map (Reading Order)
 
@@ -30,8 +28,9 @@ Follow this path depending on what you need:
 ### Deploying to production?
 
 1. **`docs/PROD_SETUP_CHECKLIST.md`** — founder production input checklist (Cloudflare, Supabase, PayU, DNS)
+1. **`docs/PRODUCTION_REQUIREMENTS.md`** — production must use real services (no stubs); enforced by Worker and release gate
 1. **`docs/RELEASE_RUNBOOK.md`** — canonical staging → canary → production deploy, validate, rollback
-1. **`docs/PROD_READY.md`** — final go/no-go checklist
+1. **`docs/PROD_READY.md`** — final go/no-go checklist and what-you-need-to-do handoff
 
 ### Operating in production?
 
@@ -48,15 +47,13 @@ Follow this path depending on what you need:
 - Run `pnpm smoke` (or `pnpm smoke:ps` on Windows) for local E2E smoke
 - See "Local smoke test" and "E2E smoke" sections below for details
 
-### Strategy / best-in-market:
+### Strategy / architecture:
 
-- **`docs/BEST_IN_MARKET_PLAN.md`** — CEO/CTO plan: trust breakers (P0), API/config, Worker split, observability, retrieval cockpit, first 10 minutes. Execution order and go/no-go criteria.
 - **`docs/ARCHITECTURE_CEO.md`** — Non-technical architecture overview: end-to-end product flow, main components, and diagrams for founders and stakeholders.
 
-### Reference / historical:
+### Reference:
 
 - `docs/BETA_ONBOARDING.md` — beta onboarding guide
-- `docs/IMPROVEMENT_PLAN.md` — improvement tracking
 
 ## Billing (PayU)
 
@@ -223,7 +220,7 @@ It checks `/healthz`, validates authenticated usage/search/context paths, and ve
 - Safe vars that can live in `[vars]`: `SUPABASE_URL`, `SUPABASE_MODE`, `EMBEDDINGS_MODE`, `ENVIRONMENT`, `RATE_LIMIT_MODE`, `ALLOWED_ORIGINS`, `PUBLIC_APP_URL`, `PAYU_BASE_URL`, `PAYU_VERIFY_URL`, `PAYU_SUCCESS_PATH`, `PAYU_CANCEL_PATH`, `PAYU_CURRENCY`.
 
 ### Security-related env vars
-- `ALLOWED_ORIGINS`: comma-separated allowed origins for CORS. If unset, CORS is not enabled. Use `*` to explicitly allow all.
+- `ALLOWED_ORIGINS`: comma-separated allowed origins for CORS. If unset, the API does not send CORS headers, so cross-origin browser requests (e.g. dashboard) will fail; **in production this is required** (release:gate fails without it). Use `*` to explicitly allow all origins.
 - `MAX_BODY_BYTES`: maximum request body size in bytes (default 1,000,000).
 - `MAX_IMPORT_BYTES`: maximum allowed size (bytes) for `/v1/import` artifacts (default 10,000,000).
 - `MAX_EXPORT_BYTES`: maximum allowed size (bytes) for `/v1/export` artifacts (default 10,000,000).

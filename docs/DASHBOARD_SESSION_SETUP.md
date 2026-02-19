@@ -53,12 +53,11 @@ If you don’t use `pnpm db:migrate` for this DB:
 
 ---
 
-## 2. Optional: set `SUPABASE_ANON_KEY` in the Worker
+## 2. Set `SUPABASE_ANON_KEY` in the Worker (required in production)
 
-The Worker verifies the dashboard’s Supabase access token by calling **Supabase Auth API → Get User**. Some setups need the project’s **anon (public) key** in the request.
+The Worker verifies the dashboard’s Supabase access token by calling **Supabase Auth API → Get User**. The project’s **anon (public) key** is required; in production, `check_config` (release:gate) fails if it is missing.
 
-- **If dashboard session creation works** (cookie set, no 401 on `/v1/dashboard/session`): you can skip this.
-- **If you get 401 “Invalid or expired Supabase token”** when the dashboard calls `POST /v1/dashboard/session`:
+- **Production:** Set the secret so dashboard session creation works:
   1. Supabase Dashboard → **Project settings** → **API**.
   2. Copy **anon / public** key.
   3. Set it in the Worker (e.g. Cloudflare):

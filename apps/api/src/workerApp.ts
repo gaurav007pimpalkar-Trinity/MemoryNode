@@ -1158,6 +1158,7 @@ const KNOWN_PATH_ALLOWED_METHODS: Array<{ test: (path: string) => boolean; allow
   { test: (p) => p === "/v1/import", allow: "POST" },
   { test: (p) => p === "/v1/admin/billing/health", allow: "GET" },
   { test: (p) => p === "/admin/webhooks/reprocess", allow: "POST" },
+  { test: (p) => p === "/admin/sessions/cleanup", allow: "POST" },
   { test: (p) => p === "/v1/dashboard/session", allow: "POST" },
   { test: (p) => p === "/v1/dashboard/logout", allow: "POST" },
   { test: (p) => p === "/v1/search/history", allow: "GET" },
@@ -2878,6 +2879,7 @@ export const handleBillingPortal = billingHandlersDefault.handleBillingPortal;
 export const handleBillingWebhook = webhookHandlersDefault.handleBillingWebhook;
 export const handleReprocessDeferredWebhooks = adminHandlersDefault.handleReprocessDeferredWebhooks;
 export const handleAdminBillingHealth = adminHandlersDefault.handleAdminBillingHealth;
+export const handleCleanupExpiredSessions = adminHandlersDefault.handleCleanupExpiredSessions;
 export const handleExport = exportHandlersDefault.handleExport;
 export const handleImport = importHandlersDefault.handleImport;
 export const handleCreateWorkspace = workspacesHandlersDefault.handleCreateWorkspace;

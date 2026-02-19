@@ -199,4 +199,4 @@ flowchart TB
 
 ---
 
-*Last updated: Feb 2025. For technical details, see `docs/CTO_ARCHITECTURE_ASCII.md` and `docs/API_REFERENCE.md`.*
+*Last updated: Feb 2025. For technical details, see `docs/API_REFERENCE.md`.*

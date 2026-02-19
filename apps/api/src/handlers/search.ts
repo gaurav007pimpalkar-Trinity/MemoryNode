@@ -95,7 +95,7 @@ export function createSearchHandlers(
       const d = (deps ?? defaultDeps) as SearchHandlerDeps;
       const { jsonResponse } = d;
       const auth = await authenticate(request, env, supabase, auditCtx);
-      const rate = await rateLimit(auth.keyHash, env);
+      const rate = await rateLimit(auth.keyHash, env, auth);
       if (!rate.allowed) {
         return jsonResponse(
           { error: { code: "rate_limited", message: "Rate limit exceeded" } },
@@ -189,7 +189,7 @@ export function createSearchHandlers(
       const d = (deps ?? defaultDeps) as SearchHandlerDeps;
       const { jsonResponse } = d;
       const auth = await authenticate(request, env, supabase, auditCtx);
-      const rate = await rateLimit(auth.keyHash, env);
+      const rate = await rateLimit(auth.keyHash, env, auth);
       if (!rate.allowed) {
         return jsonResponse({ error: { code: "rate_limited", message: "Rate limit exceeded" } }, 429, rate.headers);
       }
@@ -211,7 +211,7 @@ export function createSearchHandlers(
       const d = (deps ?? defaultDeps) as SearchHandlerDeps;
       const { jsonResponse } = d;
       const auth = await authenticate(request, env, supabase, auditCtx);
-      const rate = await rateLimit(auth.keyHash, env);
+      const rate = await rateLimit(auth.keyHash, env, auth);
       if (!rate.allowed) {
         return jsonResponse({ error: { code: "rate_limited", message: "Rate limit exceeded" } }, 429, rate.headers);
       }

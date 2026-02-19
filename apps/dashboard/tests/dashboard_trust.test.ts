@@ -5,7 +5,7 @@
  * (c) Workspace scoping — session is tied to workspace (tested via API contract).
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import * as apiClient from "../src/apiClient";
 
 describe("Dashboard apiClient (Phase 0.2 — no key in browser)", () => {
@@ -28,6 +28,34 @@ describe("Dashboard apiClient (Phase 0.2 — no key in browser)", () => {
     expect(apiClient.maskKey("mn_live_abc123")).toContain("…");
     expect(apiClient.maskKey("mn_live_abc123").length).toBeLessThan(20);
     expect(apiClient.maskKey("")).toBe("");
+  });
+
+  it("ensureDashboardSession calls POST /v1/dashboard/session with access_token and workspace_id (session + workspace flow)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, csrf_token: "csrf_abc" }),
+      text: async () => "",
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("import.meta", { env: { VITE_API_BASE_URL: "https://api.test", PROD: false } });
+    try {
+      await (apiClient as { ensureDashboardSession: (t: string, w: string) => Promise<void> }).ensureDashboardSession(
+        "supabase_access_token_xyz",
+        "workspace-id-123",
+      );
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toContain("/v1/dashboard/session");
+      expect(init?.method).toBe("POST");
+      expect(init?.credentials).toBe("include");
+      const body = JSON.parse((init?.body as string) ?? "{}");
+      expect(body).toEqual({
+        access_token: "supabase_access_token_xyz",
+        workspace_id: "workspace-id-123",
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

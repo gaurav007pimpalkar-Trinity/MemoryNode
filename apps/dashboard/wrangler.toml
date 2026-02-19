@@ -1,0 +1,6 @@
+# Cloudflare Pages — MemoryNode dashboard (app.memorynode.ai)
+# Deploy: from repo root: pnpm --filter @memorynode/dashboard build && pnpm --filter @memorynode/dashboard exec wrangler pages deploy dist --project-name=memorynode-dashboard
+# Or connect this repo in Cloudflare dashboard and use build config below.
+
+name = "memorynode-dashboard"
+pages_build_output_dir = "./dist"

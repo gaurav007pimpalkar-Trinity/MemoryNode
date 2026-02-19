@@ -20,6 +20,26 @@ export const MAX_TOPK = 20;
 export const RATE_LIMIT_WINDOW_MS = 60_000;
 export const RATE_LIMIT_MAX = RATE_LIMIT_RPM_DEFAULT;
 
+/** New keys use 15 RPM for this long (48h). */
+export const NEW_KEY_GRACE_MS = 48 * 60 * 60 * 1000;
+
+/**
+ * Resolve rate limit max (RPM) for this request. New API keys (created in last 48h) get RATE_LIMIT_RPM_NEW_KEY.
+ */
+export function getRateLimitMax(
+  env: { RATE_LIMIT_MAX?: string },
+  keyCreatedAt?: string | null,
+): number {
+  if (keyCreatedAt) {
+    const created = new Date(keyCreatedAt).getTime();
+    if (Number.isFinite(created) && Date.now() - created < NEW_KEY_GRACE_MS) {
+      return RATE_LIMIT_RPM_NEW_KEY;
+    }
+  }
+  const parsed = Number(env.RATE_LIMIT_MAX ?? RATE_LIMIT_MAX);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : RATE_LIMIT_RPM_DEFAULT;
+}
+
 /** Resolve caps by plan code (launch/build/deploy/scale/scale_plus or "free" for unentitled). */
 export function capsByPlanCode(planCode: string | null | undefined): UsageCaps {
   return getUsageCapsForPlanCode(planCode);

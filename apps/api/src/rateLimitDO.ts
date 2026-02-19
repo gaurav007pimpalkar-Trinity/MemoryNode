@@ -26,8 +26,7 @@ export class RateLimitDO {
     return Math.floor(parsed);
   }
 
-  async fetch(_request: Request): Promise<Response> {
-    void _request;
+  async fetch(request: Request): Promise<Response> {
     const withLock = async <T>(fn: () => Promise<T>): Promise<T> => {
       if (typeof this.state.blockConcurrencyWhile === "function") {
         return this.state.blockConcurrencyWhile(fn);
@@ -35,8 +34,18 @@ export class RateLimitDO {
       return fn();
     };
 
+    let requestLimit: number | undefined;
+    try {
+      const body = (await request.json()) as { limit?: number } | null;
+      if (body && typeof body.limit === "number" && Number.isFinite(body.limit) && body.limit > 0) {
+        requestLimit = Math.floor(body.limit);
+      }
+    } catch {
+      /* no body or invalid JSON: use env default */
+    }
+
     return withLock(async () => {
-      const limit = this.resolveLimit();
+      const limit = requestLimit ?? this.resolveLimit();
       const windowMs = this.resolveWindowMs();
       const now = Date.now();
       const windowStart = Math.floor(now / windowMs) * windowMs;

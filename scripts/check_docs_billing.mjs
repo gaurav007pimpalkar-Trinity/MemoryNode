@@ -3,7 +3,7 @@
  * Doc vs code: billing is PayU. CI must fail if billing docs still require Stripe.
  * - No Stripe env var names in billing docs except in a clearly marked historical/future section.
  * - PayU env var names must appear in QUICKSTART (billing) and PROD_SETUP_CHECKLIST.
- * See docs/IMPROVEMENT_PLAN.md Phase 1.
+ * Billing docs must reflect PayU-only setup.
  */
 
 import fs from "fs";
@@ -26,7 +26,6 @@ const BILLING_DOCS = [
   "TROUBLESHOOTING_BETA.md",
   "SECURITY.md",
   "PRODUCTION_DEPLOY.md",
-  "PRE_PUSH_CHECKLIST.md",
 ];
 
 const STRIPE_ENV_PATTERNS = [

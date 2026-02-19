@@ -21,6 +21,8 @@ export interface Env {
   GIT_SHA?: string;
   RATE_LIMIT_DO: DurableObjectNamespace;
   RATE_LIMIT_MODE?: string;
+  /** Max requests per minute per key (default from limits.ts). New keys use 15 for 48h. */
+  RATE_LIMIT_MAX?: string;
   ALLOWED_ORIGINS?: string;
   MAX_BODY_BYTES?: string;
   AUDIT_IP_SALT?: string;

@@ -70,6 +70,16 @@ Optional build in gate:
 RELEASE_INCLUDE_BUILD=1 pnpm release:gate
 ```
 
+### G5 live security headers (before production go-live)
+
+CI trust gates always check CSP and security headers from config (`apps/dashboard/public/_headers` or `vercel.json`). To **verify that the deployed dashboard actually serves** those headers (e.g. after CDN/Pages), run once before go-live:
+
+```bash
+G5_URL=https://app.memorynode.ai pnpm ci:trust-gates
+```
+
+Use your real dashboard URL (staging or production). If this fails, fix headers or CDN config before launch.
+
 ## 3) DB Migration Path (forward-only)
 
 Staging DB:

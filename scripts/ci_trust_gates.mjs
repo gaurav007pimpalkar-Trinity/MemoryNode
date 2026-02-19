@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Hard CI gates for Phase 0 (BEST_IN_MARKET_PLAN.md Part 3b).
+ * Hard CI gates for Phase 0.
  * G1: No dash-user in dashboard (or API used by dashboard).
  * G2: No key material in browser storage — allowlist: theme, workspace_id, mn_workspace_id.
  * G3: Prod build requires VITE_API_BASE_URL (enforced by Vite plugin; this step asserts build fails when unset).

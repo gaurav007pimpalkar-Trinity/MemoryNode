@@ -15,10 +15,12 @@ const RELEVANT_ENV_KEYS = [
   "NODE_ENV",
   "SUPABASE_URL",
   "SUPABASE_SERVICE_ROLE_KEY",
+  "SUPABASE_ANON_KEY",
   "SUPABASE_DB_URL",
   "DATABASE_URL",
   "API_KEY_SALT",
   "MASTER_ADMIN_TOKEN",
+  "ALLOWED_ORIGINS",
   "SUPABASE_MODE",
   "EMBEDDINGS_MODE",
   "OPENAI_API_KEY",
@@ -61,9 +63,11 @@ const STRICT_BASE = {
   CHECK_ENV: "production",
   SUPABASE_URL: "https://memorynode.supabase.co",
   SUPABASE_SERVICE_ROLE_KEY: "svrole_live_dummy_123",
+  SUPABASE_ANON_KEY: "anon_dummy_123",
   DATABASE_URL: "postgres://user:pass@db.internal:5432/memorynode?sslmode=require",
   API_KEY_SALT: "api_key_salt_123",
   MASTER_ADMIN_TOKEN: "admin_token_123",
+  ALLOWED_ORIGINS: "https://app.memorynode.ai",
   EMBEDDINGS_MODE: "openai",
   OPENAI_API_KEY: "sk-test-1234567890",
   PAYU_MERCHANT_KEY: "payu_merchant_key_1234567890",
@@ -127,6 +131,24 @@ describe("check_config", () => {
     });
     expect(result.status).toBe(1);
     expect(result.output).toContain("Missing PAYU_MERCHANT_SALT");
+  });
+
+  it("fails in production when ALLOWED_ORIGINS is missing", () => {
+    const result = runCheckConfig({
+      ...STRICT_BASE,
+      ALLOWED_ORIGINS: undefined,
+    });
+    expect(result.status).toBe(1);
+    expect(result.output).toContain("Missing ALLOWED_ORIGINS");
+  });
+
+  it("fails in production when SUPABASE_ANON_KEY is missing", () => {
+    const result = runCheckConfig({
+      ...STRICT_BASE,
+      SUPABASE_ANON_KEY: undefined,
+    });
+    expect(result.status).toBe(1);
+    expect(result.output).toContain("Missing SUPABASE_ANON_KEY");
   });
 
   it("passes in production with strict requirements satisfied", () => {

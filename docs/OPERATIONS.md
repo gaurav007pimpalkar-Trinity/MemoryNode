@@ -69,3 +69,13 @@ Example failure log:
 - Response status code
 - `build_version` from `/healthz` (and `git_sha` if present)
 - For local/manual deploys, set `BUILD_VERSION` before deploy to stamp `/healthz`.
+
+## F) Dashboard session cleanup (expired rows)
+
+Expired rows in `dashboard_sessions` are not deleted automatically. To prevent unbounded table growth, call the admin cleanup endpoint periodically.
+
+- **Endpoint:** `POST /admin/sessions/cleanup`
+- **Auth:** `Authorization: Bearer <MASTER_ADMIN_TOKEN>`
+- **Behavior:** Deletes rows where `expires_at < now()`; returns `{ "ok": true, "deleted": <number> }`. Rate-limited (same as other admin endpoints); call at most once per minute.
+- **Recommendation:** Run from an external cron (e.g. daily):  
+  `curl -X POST -H "Authorization: Bearer $MASTER_ADMIN_TOKEN" https://api.memorynode.ai/admin/sessions/cleanup`

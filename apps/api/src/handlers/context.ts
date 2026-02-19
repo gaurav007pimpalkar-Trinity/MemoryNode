@@ -30,7 +30,7 @@ export function createContextHandlers(
       const d = (deps ?? defaultDeps) as ContextHandlerDeps;
       const { jsonResponse } = d;
       const auth = await authenticate(request, env, supabase, auditCtx);
-      const rate = await rateLimit(auth.keyHash, env);
+      const rate = await rateLimit(auth.keyHash, env, auth);
       if (!rate.allowed) {
         return jsonResponse(
           { error: { code: "rate_limited", message: "Rate limit exceeded" } },

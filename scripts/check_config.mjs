@@ -160,6 +160,16 @@ if (strictStage) {
     if (FALSE_VALUES.has(rateLimitMode)) {
       errors.push("[production] RATE_LIMIT_MODE=off is forbidden. Remove RATE_LIMIT_MODE or set it to 'on'.");
     }
+    requireVar(
+      errors,
+      "ALLOWED_ORIGINS",
+      "Required for dashboard CORS. Set comma-separated origins (e.g. https://app.memorynode.ai).",
+    );
+    requireVar(
+      errors,
+      "SUPABASE_ANON_KEY",
+      "Required for dashboard session (Supabase Auth Get User). Set in Worker secrets.",
+    );
   }
   if (checkMode === "ci") {
     notes.push(
